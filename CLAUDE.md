@@ -40,6 +40,16 @@ stubs.
   with `herdr agent wait --status working` (launcher table data, ADR-0006).
 - Herdr agent status enum: idle/working/blocked/done/unknown.
 
+## Environment note
+
+Caio's machine has 10 marketplace plugins installed (ids + synergies: the
+user-level `/herdr-plugins` skill, `~/.claude/skills/herdr-plugins/SKILL.md`).
+Three of them hook `worktree.created` (tdi.worktree-setup, persiyanov.reviewr
+auto-open, blurname.git-tab-name) — this plugin's spawn flow will fire that
+same event per worker worktree, so test spawn WITH those installed; layout
+races here are a feature-interaction bug, not a user config problem
+(marketplace-notes.md pattern #3).
+
 ## Reference material in-repo
 
 - `docs/marketplace-notes.md` — curated survey conclusions: patterns to steal
