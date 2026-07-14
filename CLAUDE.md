@@ -57,6 +57,27 @@ races here are a feature-interaction bug, not a user config problem
 - `docs/marketplace-survey-2026-07-14.json` — raw survey verdicts (69 deep
   dives) if the notes lack detail.
 
+## Agent skills
+
+Config for the mattpocock/skills engineering workflow.
+
+### Issue tracker
+
+Local markdown — specs and tickets live under `.scratch/<feature>/` in this
+repo (no remote until publish; switch this file to GitHub Issues then).
+See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Canonical five-role vocabulary, default strings (`needs-triage` /
+`needs-info` / `ready-for-agent` / `ready-for-human` / `wontfix`).
+See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: `CONTEXT.md` + `docs/adr/` at the repo root.
+See `docs/agents/domain.md`.
+
 ## Conventions
 
 - Rust, `cargo fmt` + `clippy -D warnings` clean before commit.
