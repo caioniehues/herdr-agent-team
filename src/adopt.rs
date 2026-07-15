@@ -497,12 +497,11 @@ fn absolutize(path: &Path, base: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::herdr::{WaitOutcome, WorkspaceRef, WorktreeRef};
+    use crate::herdr::test_support::FakeHerdr;
     use crate::launcher::default_launcher_table;
     use crate::types::AgentsMdMode;
-    use std::cell::RefCell;
     use std::sync::atomic::{AtomicU64, Ordering};
-    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -534,73 +533,23 @@ mod tests {
         }
     }
 
-    struct FakeHerdr {
-        pane: PaneInfo,
-        calls: RefCell<Vec<String>>,
-    }
-
-    impl FakeHerdr {
-        fn new(root: &Path, agent: Option<&str>) -> Self {
-            Self {
-                pane: PaneInfo {
-                    pane_id: "pane-adopted".to_owned(),
-                    workspace_id: "workspace-borrowed".to_owned(),
-                    agent: agent.map(str::to_owned),
-                    agent_id: Some("session-adopted".to_owned()),
-                    agent_session: Some(crate::herdr::AgentSession {
-                        source: "herdr:claude".to_owned(),
-                        agent: "claude".to_owned(),
-                        kind: "id".to_owned(),
-                        value: "session-adopted".to_owned(),
-                    }),
-                    agent_status: Some("idle".to_owned()),
-                    cwd: Some(root.to_path_buf()),
-                },
-                calls: RefCell::new(Vec::new()),
-            }
-        }
-
-        fn calls(&self) -> Vec<String> {
-            self.calls.borrow().clone()
-        }
-    }
-
-    impl HerdrApi for FakeHerdr {
-        fn health_check(&self) -> Result<(), HerdrError> {
-            unreachable!("adoption does not perform spawn preflight")
-        }
-
-        fn worktree_create(&self, _repo: &Path, _branch: &str) -> Result<WorktreeRef, HerdrError> {
-            unreachable!("adoption does not create worktrees")
-        }
-
-        fn workspace_create(&self, _cwd: &Path, _label: &str) -> Result<WorkspaceRef, HerdrError> {
-            unreachable!("adoption does not create workspaces")
-        }
-
-        fn pane_run(&self, pane_id: &str, input: &str) -> Result<(), HerdrError> {
-            self.calls
-                .borrow_mut()
-                .push(format!("pane_run:{pane_id}:{input}"));
-            Ok(())
-        }
-
-        fn agent_wait(
-            &self,
-            pane_id: &str,
-            status: &str,
-            _timeout: Duration,
-        ) -> Result<WaitOutcome, HerdrError> {
-            self.calls
-                .borrow_mut()
-                .push(format!("agent_wait:{pane_id}:{status}"));
-            Ok(WaitOutcome::Reached)
-        }
-
-        fn pane_get(&self, pane_id: &str) -> Result<PaneInfo, HerdrError> {
-            self.calls.borrow_mut().push(format!("pane_get:{pane_id}"));
-            Ok(self.pane.clone())
-        }
+    fn fake_herdr(root: &Path, agent: Option<&str>) -> FakeHerdr {
+        let fake = FakeHerdr::default();
+        *fake.pane.borrow_mut() = Some(PaneInfo {
+            pane_id: "pane-adopted".to_owned(),
+            workspace_id: "workspace-borrowed".to_owned(),
+            agent: agent.map(str::to_owned),
+            agent_id: Some("session-adopted".to_owned()),
+            agent_session: Some(crate::herdr::AgentSession {
+                source: "herdr:claude".to_owned(),
+                agent: "claude".to_owned(),
+                kind: "id".to_owned(),
+                value: "session-adopted".to_owned(),
+            }),
+            agent_status: Some("idle".to_owned()),
+            cwd: Some(root.to_path_buf()),
+        });
+        fake
     }
 
     fn adopted_arguments(name: &str) -> AdoptArguments {
@@ -750,7 +699,7 @@ mod tests {
     fn adopts_into_an_active_star_run_with_a_fresh_protocol() {
         let temp = TempDir::new();
         let run = existing_run(temp.path(), Topology::Star);
-        let fake = FakeHerdr::new(temp.path(), Some("codex"));
+        let fake = fake_herdr(temp.path(), Some("codex"));
 
         let outcome = adopt_resolved(
             adopted_arguments("newcomer"),
@@ -798,7 +747,7 @@ mod tests {
         fs::write(&brief, "adopted task").expect("write adopted brief");
         let mut arguments = adopted_arguments("briefed");
         arguments.brief = Some(brief.clone());
-        let fake = FakeHerdr::new(temp.path(), Some("claude"));
+        let fake = fake_herdr(temp.path(), Some("claude"));
 
         adopt_resolved(
             arguments,
@@ -822,7 +771,7 @@ mod tests {
     #[test]
     fn bootstraps_a_minimal_adhoc_star_run_from_pane_metadata() {
         let temp = TempDir::new();
-        let fake = FakeHerdr::new(temp.path(), Some("claude"));
+        let fake = fake_herdr(temp.path(), Some("claude"));
 
         let outcome = adopt_resolved(
             adopted_arguments("researcher"),
@@ -859,7 +808,7 @@ mod tests {
     fn refuses_mesh_runs_before_protocol_or_prompt_mutation() {
         let temp = TempDir::new();
         let run = existing_run(temp.path(), Topology::Mesh);
-        let fake = FakeHerdr::new(temp.path(), Some("codex"));
+        let fake = fake_herdr(temp.path(), Some("codex"));
 
         let error = adopt_resolved(
             adopted_arguments("newcomer"),
@@ -880,7 +829,7 @@ mod tests {
     #[test]
     fn unknown_agent_uses_conservative_policy_and_names_exact_config_entry() {
         let temp = TempDir::new();
-        let fake = FakeHerdr::new(temp.path(), Some("opencode"));
+        let fake = fake_herdr(temp.path(), Some("opencode"));
 
         let outcome = adopt_resolved(
             adopted_arguments("unknown-kind"),
@@ -917,7 +866,7 @@ mod tests {
     #[test]
     fn refuses_a_pane_without_a_detected_agent_before_creating_a_run() {
         let temp = TempDir::new();
-        let fake = FakeHerdr::new(temp.path(), None);
+        let fake = fake_herdr(temp.path(), None);
 
         let error = adopt_resolved(
             adopted_arguments("no-agent"),

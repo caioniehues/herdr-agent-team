@@ -596,6 +596,7 @@ fn worktree_is_dirty(path: &Path) -> Result<bool, StatusKillError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::herdr::test_support::FakeHerdr;
     use crate::run::{create_run, load_run, match_pane};
     use crate::types::{
         GodSpec, RunState, TeamSpec, Topology, WorkerLifecycle, WorkerRunState, WorkerSpec,
@@ -692,27 +693,20 @@ mod tests {
         }
     }
 
-    struct FakeAgents(Vec<AgentInfo>);
-
-    impl HerdrApi for FakeAgents {
-        fn agent_list(&self) -> Result<Vec<AgentInfo>, HerdrError> {
-            Ok(self.0.clone())
-        }
-    }
-
     #[test]
     fn status_reports_live_gone_and_report_mtime_in_spec_order() {
         let temp = TempDir::new();
         let run = create_run(temp.path(), run_state(temp.path())).expect("create run");
         fs::write(run.dir.join("inbox/builder.md"), "done").expect("write report");
-        let source = FakeAgents(vec![AgentInfo {
+        let source = FakeHerdr::default();
+        *source.agents.borrow_mut() = vec![AgentInfo {
             pane_id: "pane-builder".to_owned(),
             workspace_id: "workspace-builder".to_owned(),
             agent: Some("codex".to_owned()),
             agent_id: None,
             agent_session: None,
             status: Some("working".to_owned()),
-        }]);
+        }];
 
         let table = status_run_with_source(&run.dir, false, &source).expect("render table");
         let rows = table.lines().collect::<Vec<_>>();

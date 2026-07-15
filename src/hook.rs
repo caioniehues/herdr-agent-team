@@ -379,7 +379,6 @@ mod tests {
     };
     use std::collections::BTreeMap;
     use std::fs;
-    use std::os::unix::fs::PermissionsExt;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -414,40 +413,64 @@ mod tests {
         }
     }
 
-    struct FakeHerdr {
-        client: HerdrClient,
-        log: PathBuf,
+    struct HookFixture {
+        client: crate::herdr::test_support::FakeHerdr,
     }
 
-    impl FakeHerdr {
-        fn new(temp: &TempDir) -> Self {
-            let binary = temp.path().join("fake-herdr");
-            let log = temp.path().join("herdr-argv.log");
-            fs::write(
-                &binary,
-                format!(
-                    "#!/bin/sh\nprintf '%s\\n' \"$@\" >> '{}'\nif [ \"$1\" = 'agent' ] && [ \"$2\" = 'wait' ]; then\n  printf '{{\"event\":\"pane.agent_status_changed\",\"data\":{{\"pane_id\":\"%s\",\"agent_status\":\"working\"}}}}\\n' \"$3\"\nfi\n",
-                    log.display()
-                ),
-            )
-            .expect("write fake Herdr CLI");
-            let mut permissions = fs::metadata(&binary).expect("stat fake CLI").permissions();
-            permissions.set_mode(0o755);
-            fs::set_permissions(&binary, permissions).expect("make fake CLI executable");
+    impl HookFixture {
+        fn new(_: &TempDir) -> Self {
             Self {
-                client: HerdrClient { binary },
-                log,
+                client: crate::herdr::test_support::FakeHerdr::default(),
             }
         }
 
         fn argv(&self) -> Vec<String> {
-            fs::read_to_string(&self.log)
-                .expect("read fake CLI log")
-                .lines()
-                .map(str::to_owned)
+            self.client
+                .calls()
+                .into_iter()
+                .flat_map(|call| {
+                    if let Some(rest) = call.strip_prefix("pane_run:") {
+                        let (pane, input) = rest.split_once(':').expect("pane run call shape");
+                        return vec!["pane", "run", pane, input]
+                            .into_iter()
+                            .map(str::to_owned)
+                            .collect();
+                    }
+                    if let Some(rest) = call.strip_prefix("agent_wait:") {
+                        let (pane, status) = rest.split_once(':').expect("agent wait call shape");
+                        return vec!["agent", "wait", pane, "--status", status]
+                            .into_iter()
+                            .map(str::to_owned)
+                            .collect();
+                    }
+                    if let Some(rest) = call.strip_prefix("notification:") {
+                        let mut parts = rest.splitn(3, ':');
+                        let title = parts.next().expect("notification title");
+                        let body = parts.next().expect("notification body");
+                        let sound = parts.next().expect("notification sound");
+                        return vec![
+                            "notification",
+                            "show",
+                            title,
+                            "--body",
+                            body,
+                            "--sound",
+                            sound,
+                        ]
+                        .into_iter()
+                        .map(str::to_owned)
+                        .collect();
+                    }
+                    if call == "api_schema" {
+                        return vec!["api".to_owned(), "schema".to_owned(), "--json".to_owned()];
+                    }
+                    Vec::new()
+                })
                 .collect()
         }
     }
+
+    type FakeHerdr = HookFixture;
 
     fn fixture_run(state_dir: &Path, worker_pane: &str) -> RunBoard {
         let worker_name = "builder".to_owned();
@@ -667,12 +690,11 @@ mod tests {
             .expect("process non-draining status");
 
             assert!(queued.exists(), "{status} must not drain the outbox");
-            if fake.log.exists() {
-                assert!(!fs::read_to_string(&fake.log)
-                    .expect("read fake Herdr log")
-                    .lines()
-                    .any(|argument| argument == "queued message"));
-            }
+            assert!(!fake
+                .client
+                .calls()
+                .iter()
+                .any(|call| call.ends_with(":queued message")));
         }
     }
 
@@ -721,7 +743,7 @@ mod tests {
         .expect("ignore unrelated pane");
 
         assert!(!run.dir.join("inbox/events.jsonl").exists());
-        assert!(!fake.log.exists());
+        assert!(fake.client.calls().is_empty());
     }
 
     #[test]

@@ -478,6 +478,221 @@ impl HerdrApi for HerdrClient {
     }
 }
 
+#[cfg(test)]
+pub(crate) mod test_support {
+    use super::*;
+    use std::cell::{Cell, RefCell};
+    use std::collections::{BTreeMap, VecDeque};
+
+    #[derive(Default)]
+    pub(crate) struct FakeHerdr {
+        pub calls: RefCell<Vec<String>>,
+        pub workspace_count: Cell<usize>,
+        pub worktree_count: Cell<usize>,
+        pub protocols_state_dir: RefCell<Option<PathBuf>>,
+        pub protocol_snapshots: RefCell<Vec<BTreeMap<PathBuf, String>>>,
+        pub fail_launch_pane: RefCell<Option<String>>,
+        pub fail_worktree_branch: RefCell<Option<String>>,
+        pub fail_health: Cell<bool>,
+        pub omit_agent: Cell<bool>,
+        pub omit_agent_id: Cell<bool>,
+        pub wait_timeouts: Cell<usize>,
+        pub agent_id_delays: Cell<usize>,
+        pub require_empty_submit: Cell<bool>,
+        pub empty_submit_seen: Cell<bool>,
+        pub pane: RefCell<Option<PaneInfo>>,
+        pub agents: RefCell<Vec<AgentInfo>>,
+        pub waits: RefCell<VecDeque<WaitOutcome>>,
+    }
+
+    impl FakeHerdr {
+        pub fn calls(&self) -> Vec<String> {
+            self.calls.borrow().clone()
+        }
+        pub fn protocol_snapshots(&self) -> Vec<BTreeMap<PathBuf, String>> {
+            self.protocol_snapshots.borrow().clone()
+        }
+        pub fn command_error() -> HerdrError {
+            HerdrError::Command {
+                argv: "fake pane run".to_owned(),
+                status: Some(1),
+                stderr: "injected failure".to_owned(),
+            }
+        }
+        fn snapshot_protocols(&self) {
+            let Some(state_dir) = self.protocols_state_dir.borrow().as_ref().cloned() else {
+                return;
+            };
+            let run_dir = std::fs::read_dir(state_dir.join("runs"))
+                .expect("read run state directory")
+                .filter_map(Result::ok)
+                .map(|entry| entry.path())
+                .find(|path| path.is_dir())
+                .expect("generated run directory");
+            let snapshots = std::fs::read_dir(run_dir.join("protocols"))
+                .expect("read generated protocols")
+                .filter_map(Result::ok)
+                .map(|entry| entry.path())
+                .map(|path| {
+                    let contents = std::fs::read_to_string(&path).expect("read protocol");
+                    (path, contents)
+                })
+                .collect::<BTreeMap<_, _>>();
+            assert!(!snapshots.is_empty(), "protocols must predate agent launch");
+            self.protocol_snapshots.borrow_mut().push(snapshots);
+        }
+    }
+
+    impl HerdrApi for FakeHerdr {
+        fn health_check(&self) -> Result<(), HerdrError> {
+            self.calls.borrow_mut().push("health_check".to_owned());
+            if self.fail_health.get() {
+                Err(Self::command_error())
+            } else {
+                Ok(())
+            }
+        }
+        fn workspace_create(&self, cwd: &Path, label: &str) -> Result<WorkspaceRef, HerdrError> {
+            let number = self.workspace_count.get() + 1;
+            self.workspace_count.set(number);
+            self.calls
+                .borrow_mut()
+                .push(format!("workspace_create:{label}:{}", cwd.display()));
+            Ok(WorkspaceRef {
+                workspace_id: format!("workspace-{number}"),
+                pane_id: format!("pane-{number}"),
+            })
+        }
+        fn workspace_close(&self, workspace_id: &str) -> Result<(), HerdrError> {
+            self.calls
+                .borrow_mut()
+                .push(format!("workspace_close:{workspace_id}"));
+            Ok(())
+        }
+        fn worktree_create(&self, repo: &Path, branch: &str) -> Result<WorktreeRef, HerdrError> {
+            self.calls
+                .borrow_mut()
+                .push(format!("worktree_create:{branch}:{}", repo.display()));
+            if self.fail_worktree_branch.borrow().as_deref() == Some(branch) {
+                return Err(Self::command_error());
+            }
+            let number = self.worktree_count.get() + 1;
+            self.worktree_count.set(number);
+            Ok(WorktreeRef {
+                path: repo.join(format!("worktree-{number}")),
+            })
+        }
+        fn worktree_remove(&self, path: &Path) -> Result<(), HerdrError> {
+            self.calls
+                .borrow_mut()
+                .push(format!("worktree_remove:{}", path.display()));
+            Ok(())
+        }
+        fn pane_run(&self, pane_id: &str, input: &str) -> Result<(), HerdrError> {
+            if input.starts_with('\'') {
+                self.snapshot_protocols();
+            }
+            self.calls
+                .borrow_mut()
+                .push(format!("pane_run:{pane_id}:{input}"));
+            if self.fail_launch_pane.borrow().as_deref() == Some(pane_id) && input.starts_with('\'')
+            {
+                return Err(Self::command_error());
+            }
+            if input.is_empty() {
+                self.empty_submit_seen.set(true);
+            }
+            Ok(())
+        }
+        fn agent_wait(
+            &self,
+            pane_id: &str,
+            status: &str,
+            _: Duration,
+        ) -> Result<WaitOutcome, HerdrError> {
+            self.calls
+                .borrow_mut()
+                .push(format!("agent_wait:{pane_id}:{status}"));
+            if let Some(outcome) = self.waits.borrow_mut().pop_front() {
+                return Ok(outcome);
+            }
+            if self.wait_timeouts.get() > 0 {
+                self.wait_timeouts.set(self.wait_timeouts.get() - 1);
+                return Ok(WaitOutcome::TimedOut);
+            }
+            if status == "working"
+                && self.require_empty_submit.get()
+                && !self.empty_submit_seen.get()
+            {
+                return Ok(WaitOutcome::TimedOut);
+            }
+            Ok(WaitOutcome::Reached)
+        }
+        fn agent_list(&self) -> Result<Vec<AgentInfo>, HerdrError> {
+            Ok(self.agents.borrow().clone())
+        }
+        fn pane_get(&self, pane_id: &str) -> Result<PaneInfo, HerdrError> {
+            self.calls.borrow_mut().push(format!("pane_get:{pane_id}"));
+            if let Some(pane) = self.pane.borrow().clone() {
+                return Ok(pane);
+            }
+            let delayed = self.agent_id_delays.get() > 0;
+            if delayed {
+                self.agent_id_delays.set(self.agent_id_delays.get() - 1);
+            }
+            let agent_detected = !self.omit_agent.get();
+            Ok(PaneInfo {
+                pane_id: pane_id.to_owned(),
+                workspace_id: pane_id.replace("pane", "workspace"),
+                agent: agent_detected.then(|| {
+                    if pane_id == "pane-1" {
+                        "claude".to_owned()
+                    } else {
+                        "codex".to_owned()
+                    }
+                }),
+                agent_id: (agent_detected && !self.omit_agent_id.get() && !delayed)
+                    .then(|| format!("agent-session-{pane_id}")),
+                agent_session: (agent_detected && !self.omit_agent_id.get() && !delayed).then(
+                    || AgentSession {
+                        source: "herdr:test".to_owned(),
+                        agent: "claude".to_owned(),
+                        kind: "id".to_owned(),
+                        value: format!("agent-session-{pane_id}"),
+                    },
+                ),
+                agent_status: Some("idle".to_owned()),
+                cwd: None,
+            })
+        }
+        fn api_schema(&self) -> Result<String, HerdrError> {
+            self.calls.borrow_mut().push("api_schema".to_owned());
+            Ok("{}".to_owned())
+        }
+        fn pane_report_metadata(
+            &self,
+            pane_id: &str,
+            _: &MetadataUpdate,
+        ) -> Result<(), HerdrError> {
+            self.calls
+                .borrow_mut()
+                .push(format!("pane_report_metadata:{pane_id}"));
+            Ok(())
+        }
+        fn notification_show(
+            &self,
+            title: &str,
+            body: &str,
+            sound: &str,
+        ) -> Result<(), HerdrError> {
+            self.calls
+                .borrow_mut()
+                .push(format!("notification:{title}:{body}:{sound}"));
+            Ok(())
+        }
+    }
+}
+
 struct Args(Vec<OsString>);
 
 fn args<const N: usize>(initial: [&str; N]) -> Args {
