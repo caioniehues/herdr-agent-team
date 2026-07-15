@@ -57,6 +57,18 @@ pub enum AdoptError {
     #[error("cannot adopt into mesh run `{run_dir}`; immutable peer protocols cannot include the newcomer")]
     MeshRun { run_dir: PathBuf },
 
+    #[error(
+        "recovered protocol `{path}` does not identify worker '{worker}'; refusing to brief it"
+    )]
+    ForeignProtocol { worker: String, path: PathBuf },
+
+    #[error("cannot read recovered protocol `{path}`: {source}")]
+    ProtocolRead {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
     #[error("worker name '{worker}' must be a safe single filename component")]
     UnsafeWorkerName { worker: String },
 
@@ -408,13 +420,19 @@ fn adopt_resolved<H: HerdrApi>(
             disposition,
         });
     }
-    let mut protocol_team = run.state.spec.clone();
-    if let Some(cwd) = pane.cwd.clone() {
-        protocol_team.cwd = cwd;
-    }
-    write_worker_protocol(&protocol_team, &worker, &run)?;
-
     let protocol_path = worker_protocol_path(&run, &worker);
+    if disposition == AdoptDisposition::Recovered && protocol_path.is_file() {
+        // Crash boundary: the immutable protocol was written before the crash
+        // but the brief was never submitted. Reuse it (mirrors spawn resume);
+        // rewriting would violate `create_new` immutability and fail forever.
+        verify_recovered_protocol(&protocol_path, &worker.name)?;
+    } else {
+        let mut protocol_team = run.state.spec.clone();
+        if let Some(cwd) = pane.cwd.clone() {
+            protocol_team.cwd = cwd;
+        }
+        write_worker_protocol(&protocol_team, &worker, &run)?;
+    }
     let prompt = adoption_prompt(
         &worker,
         &launcher,
@@ -437,6 +455,24 @@ fn adopt_resolved<H: HerdrApi>(
         unknown_agent,
         disposition,
     })
+}
+
+/// A recovered pending adoption reuses the protocol that survived the crash
+/// (the file is immutable — `create_new` — so rewriting fails forever).
+/// Before briefing, verify the surviving file identifies this worker.
+fn verify_recovered_protocol(path: &Path, worker_name: &str) -> Result<(), AdoptError> {
+    let contents = fs::read_to_string(path).map_err(|source| AdoptError::ProtocolRead {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    if contents.contains(&format!("- Worker: `{worker_name}`")) {
+        Ok(())
+    } else {
+        Err(AdoptError::ForeignProtocol {
+            worker: worker_name.to_owned(),
+            path: path.to_path_buf(),
+        })
+    }
 }
 
 fn prepare_existing_run(
@@ -968,6 +1004,107 @@ mod tests {
             pane_runs, 1,
             "recovery submits one prompt and no launcher command"
         );
+    }
+
+    #[test]
+    fn pending_adoptee_rerun_recovers_when_protocol_survived_the_crash() {
+        let temp = TempDir::new();
+        let mut run = existing_run(temp.path(), Topology::Star);
+        let fake = fake_herdr(temp.path(), Some("codex"));
+        let worker = WorkerSpec {
+            name: "newcomer".to_owned(),
+            agent: "codex".to_owned(),
+            role: DEFAULT_ROLE.to_owned(),
+            task: None,
+            worktree: false,
+            branch: None,
+            brief: PathBuf::new(),
+        };
+        insert_adopted_worker(
+            &mut run.state,
+            &worker,
+            fake.pane.borrow().as_ref().unwrap(),
+        );
+        crate::run::save_run(&run).unwrap();
+        // Crash boundary: protocol written, brief not yet submitted.
+        let protocol_path = run.dir.join("protocols/newcomer.md");
+        fs::create_dir_all(run.dir.join("protocols")).unwrap();
+        let crashed_protocol =
+            "# Generated AGENTS.md — herdr agent-team protocol\n\n- Worker: `newcomer`\n";
+        fs::write(&protocol_path, crashed_protocol).unwrap();
+
+        let outcome = adopt_resolved(
+            adopted_arguments("newcomer"),
+            RunTarget::Existing(Box::new(run)),
+            temp.path(),
+            "god-pane",
+            &default_launcher_table(),
+            &fake,
+        )
+        .expect("recovery must reuse the surviving immutable protocol");
+
+        assert_eq!(outcome.disposition, AdoptDisposition::Recovered);
+        assert_eq!(
+            outcome.run.state.workers["newcomer"].lifecycle,
+            WorkerLifecycle::Running
+        );
+        // The immutable protocol is reused, never rewritten.
+        assert_eq!(
+            fs::read_to_string(&protocol_path).unwrap(),
+            crashed_protocol
+        );
+        let pane_runs = fake
+            .typed_calls
+            .borrow()
+            .iter()
+            .filter(|call| matches!(call, crate::herdr::test_support::FakeCall::PaneRun(..)))
+            .count();
+        assert_eq!(pane_runs, 1, "recovery submits exactly one prompt");
+    }
+
+    #[test]
+    fn recovery_rejects_a_surviving_protocol_that_names_another_worker() {
+        let temp = TempDir::new();
+        let mut run = existing_run(temp.path(), Topology::Star);
+        let fake = fake_herdr(temp.path(), Some("codex"));
+        let worker = WorkerSpec {
+            name: "newcomer".to_owned(),
+            agent: "codex".to_owned(),
+            role: DEFAULT_ROLE.to_owned(),
+            task: None,
+            worktree: false,
+            branch: None,
+            brief: PathBuf::new(),
+        };
+        insert_adopted_worker(
+            &mut run.state,
+            &worker,
+            fake.pane.borrow().as_ref().unwrap(),
+        );
+        crate::run::save_run(&run).unwrap();
+        fs::create_dir_all(run.dir.join("protocols")).unwrap();
+        fs::write(
+            run.dir.join("protocols/newcomer.md"),
+            "# Generated AGENTS.md — herdr agent-team protocol\n\n- Worker: `impostor`\n",
+        )
+        .unwrap();
+
+        let error = adopt_resolved(
+            adopted_arguments("newcomer"),
+            RunTarget::Existing(Box::new(run)),
+            temp.path(),
+            "god-pane",
+            &default_launcher_table(),
+            &fake,
+        )
+        .expect_err("a foreign protocol must not be briefed to this worker");
+
+        assert!(matches!(error, AdoptError::ForeignProtocol { .. }));
+        assert!(!fake
+            .typed_calls
+            .borrow()
+            .iter()
+            .any(|call| matches!(call, crate::herdr::test_support::FakeCall::PaneRun(..))));
     }
 
     #[test]
