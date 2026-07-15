@@ -12,6 +12,7 @@ pub mod herdr;
 pub mod hook;
 pub mod launcher;
 pub mod msg;
+pub mod reconcile;
 pub mod run;
 pub mod spawn;
 pub mod spec;

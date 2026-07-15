@@ -1,6 +1,8 @@
 //! Durable run-board storage and matching from `docs/spec.md` sections 4 through 6.
 
+use crate::reconcile::HookMetadata;
 use crate::types::{RunLifecycle, RunState};
+use serde::Deserialize;
 use serde_json::Value;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
@@ -52,6 +54,12 @@ pub struct MatchedWorker {
     pub worker_name: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct HookEnvelope {
+    #[serde(default)]
+    hook: HookMetadata,
+}
+
 pub fn create_run(state_dir: &Path, state: RunState) -> Result<RunBoard, RunError> {
     validate_team_name(&state.spec.name)?;
 
@@ -69,7 +77,7 @@ pub fn create_run(state_dir: &Path, state: RunState) -> Result<RunBoard, RunErro
         dir: run_dir,
         state,
     };
-    if let Err(error) = save_run(&run) {
+    if let Err(error) = save_run_with_hook(&run, &HookMetadata::default()) {
         let _ = fs::remove_dir_all(&run.dir);
         return Err(error);
     }
@@ -87,10 +95,37 @@ pub fn load_run(run_dir: &Path) -> Result<RunBoard, RunError> {
 }
 
 pub fn save_run(run: &RunBoard) -> Result<(), RunError> {
-    let contents = toml::to_string_pretty(&run.state)?;
-    let mut file = File::create(run.dir.join(RUN_FILE))?;
+    let hook = load_hook_metadata(&run.dir)?;
+    save_run_with_hook(run, &hook)
+}
+
+pub fn load_hook_metadata(run_dir: &Path) -> Result<HookMetadata, RunError> {
+    let contents = fs::read_to_string(run_dir.join(RUN_FILE))?;
+    Ok(toml::from_str::<HookEnvelope>(&contents)?.hook)
+}
+
+pub fn save_run_with_hook(run: &RunBoard, hook: &HookMetadata) -> Result<(), RunError> {
+    let mut contents = toml::to_string_pretty(&run.state)?;
+    if hook != &HookMetadata::default() {
+        if !hook.worker_status.is_empty() {
+            contents.push_str("\n[hook.worker_status]\n");
+            contents.push_str(&toml::to_string(&hook.worker_status)?);
+        }
+        if !hook.worker_agent_identity.is_empty() {
+            contents.push_str("\n[hook.worker_agent_identity]\n");
+            contents.push_str(&toml::to_string(&hook.worker_agent_identity)?);
+        }
+    }
+    write_run_contents(&run.dir, &contents)
+}
+
+fn write_run_contents(run_dir: &Path, contents: &str) -> Result<(), RunError> {
+    let path = run_dir.join(RUN_FILE);
+    let temporary = run_dir.join(format!(".{RUN_FILE}.{}.tmp", std::process::id()));
+    let mut file = File::create(&temporary)?;
     file.write_all(contents.as_bytes())?;
     file.flush()?;
+    fs::rename(&temporary, &path)?;
     Ok(())
 }
 

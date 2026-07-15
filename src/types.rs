@@ -120,6 +120,7 @@ pub enum WorkerLifecycle {
     Failed,
     Ended,
     Released,
+    Orphaned,
 }
 
 fn default_cwd() -> PathBuf {
