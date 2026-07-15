@@ -4,9 +4,7 @@ use crate::herdr::{HerdrApi, HerdrClient, HerdrError, WaitOutcome};
 use crate::launcher::{
     conservative_adopted_launcher, launcher_entry, load_from_env, LauncherError,
 };
-use crate::run::{
-    list_active_runs, load_hook_metadata, load_run, save_run_with_hook, RunBoard, RunError,
-};
+use crate::run::{list_active_runs, load_run, update_run_with_hook, RunBoard, RunError};
 use crate::types::{LauncherEntry, LauncherTable, RunLifecycle};
 use std::collections::BTreeSet;
 use std::env;
@@ -288,13 +286,13 @@ fn request_attention_from_pane<H: HerdrApi>(
             (worker.pane_id.as_deref() == Some(source_pane)).then(|| name.clone())
         })
         .ok_or(MsgError::AttentionSource)?;
-    let mut metadata = load_hook_metadata(&run.dir)?;
-    metadata.attention_pending.insert(worker_name.clone(), true);
-    let first = metadata
-        .aggregate_notifications
-        .insert(format!("attention:{worker_name}"), true)
-        .is_none();
-    save_run_with_hook(run, &metadata)?;
+    let (_, first) = update_run_with_hook(&run.dir, |_, metadata| -> Result<bool, MsgError> {
+        metadata.attention_pending.insert(worker_name.clone(), true);
+        Ok(metadata
+            .aggregate_notifications
+            .insert(format!("attention:{worker_name}"), true)
+            .is_none())
+    })?;
     if first {
         herdr.notification_show(
             "Worker needs attention",
@@ -1040,6 +1038,36 @@ mod tests {
         assert_eq!(
             metadata.aggregate_notifications.get("attention:builder"),
             Some(&true)
+        );
+    }
+
+    #[test]
+    fn attention_writer_preserves_fresher_hook_worker_state() {
+        let temp = TempDir::new();
+        let run = crate::run::create_run(
+            temp.path(),
+            fixture_run(temp.path(), "builder", "claude").state,
+        )
+        .unwrap();
+        let stale = run.clone();
+        crate::run::update_run_with_hook(&run.dir, |fresh, _| -> Result<(), MsgError> {
+            fresh.state.workers.get_mut("builder").unwrap().lifecycle =
+                crate::types::WorkerLifecycle::Orphaned;
+            Ok(())
+        })
+        .unwrap();
+
+        request_attention_from_pane(
+            &stale,
+            "please review",
+            "worker-pane",
+            &fake_herdr("claude", Some("working"), []),
+        )
+        .unwrap();
+
+        assert_eq!(
+            load_run(&run.dir).unwrap().state.workers["builder"].lifecycle,
+            crate::types::WorkerLifecycle::Orphaned
         );
     }
 

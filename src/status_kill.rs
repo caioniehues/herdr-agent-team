@@ -1,7 +1,7 @@
 //! Team status and teardown commands from `docs/spec.md` sections 6 and 12.
 
 use crate::herdr::{AgentInfo, HerdrApi, HerdrClient, HerdrError};
-use crate::run::{load_run, mark_ended, RunBoard, RunError};
+use crate::run::{load_run, update_run_with_hook, RunBoard, RunError};
 use crate::types::{RunLifecycle, WorkerLifecycle};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
@@ -375,7 +375,7 @@ fn kill_run_with_backend(
     let mut run = load_run(run_dir)?;
     if run.state.lifecycle == RunLifecycle::Ended {
         if end_worker_lifecycles(&mut run) {
-            mark_ended(&mut run)?;
+            persist_kill_state(run_dir, None, true)?;
         }
         return Ok(());
     }
@@ -419,8 +419,7 @@ fn kill_run_with_backend(
         }
     }
 
-    end_worker_lifecycles(&mut run);
-    mark_ended(&mut run)?;
+    persist_kill_state(run_dir, None, true)?;
     if dirty_paths.is_empty() {
         Ok(())
     } else {
@@ -434,7 +433,7 @@ fn kill_worker_with_backend(
     remove_worktrees: bool,
     backend: &impl TeardownBackend,
 ) -> Result<(), StatusKillError> {
-    let mut run = load_run(run_dir)?;
+    let run = load_run(run_dir)?;
     if run.state.lifecycle == RunLifecycle::Ended {
         return Ok(());
     }
@@ -482,26 +481,44 @@ fn kill_worker_with_backend(
     } else {
         WorkerLifecycle::Ended
     };
-    run.state
-        .workers
-        .get_mut(worker_name)
-        .expect("worker was loaded above")
-        .lifecycle = terminal;
-    if run.state.workers.values().all(|state| {
-        matches!(
-            state.lifecycle,
-            WorkerLifecycle::Ended | WorkerLifecycle::Released | WorkerLifecycle::Failed
-        )
-    }) {
-        mark_ended(&mut run)?;
-    } else {
-        crate::run::save_run(&run)?;
-    }
+    persist_kill_state(run_dir, Some((worker_name, terminal)), false)?;
     if dirty_paths.is_empty() {
         Ok(())
     } else {
         Err(StatusKillError::DirtyWorktrees { paths: dirty_paths })
     }
+}
+
+fn persist_kill_state(
+    run_dir: &Path,
+    worker: Option<(&str, WorkerLifecycle)>,
+    end_run: bool,
+) -> Result<(), StatusKillError> {
+    update_run_with_hook(run_dir, |fresh, _| -> Result<(), StatusKillError> {
+        if let Some((name, lifecycle)) = worker {
+            fresh
+                .state
+                .workers
+                .get_mut(name)
+                .expect("kill target exists in persisted run state")
+                .lifecycle = lifecycle;
+            if fresh.state.workers.values().all(|state| {
+                matches!(
+                    state.lifecycle,
+                    WorkerLifecycle::Ended | WorkerLifecycle::Released | WorkerLifecycle::Failed
+                )
+            }) {
+                fresh.state.lifecycle = RunLifecycle::Ended;
+            }
+        } else {
+            end_worker_lifecycles(fresh);
+        }
+        if end_run {
+            fresh.state.lifecycle = RunLifecycle::Ended;
+        }
+        Ok(())
+    })?;
+    Ok(())
 }
 
 fn release_adopted_workers(run: &mut RunBoard, backend: &impl TeardownBackend) {
@@ -597,6 +614,7 @@ fn worktree_is_dirty(path: &Path) -> Result<bool, StatusKillError> {
 mod tests {
     use super::*;
     use crate::herdr::test_support::FakeHerdr;
+    use crate::run::mark_ended;
     use crate::run::{create_run, load_run, match_pane};
     use crate::types::{
         GodSpec, RunState, TeamSpec, Topology, WorkerLifecycle, WorkerRunState, WorkerSpec,
@@ -934,6 +952,29 @@ mod tests {
             WorkerLifecycle::Running
         );
         assert_eq!(backend.closed.into_inner(), ["workspace-builder"]);
+    }
+
+    #[test]
+    fn kill_worker_writer_preserves_fresher_hook_state() {
+        let temp = TempDir::new();
+        let run = create_run(temp.path(), run_state(temp.path())).unwrap();
+        crate::run::update_run_with_hook(&run.dir, |fresh, _| -> Result<(), StatusKillError> {
+            fresh.state.workers.get_mut("reviewer").unwrap().lifecycle = WorkerLifecycle::Orphaned;
+            Ok(())
+        })
+        .unwrap();
+
+        kill_worker_with_backend(&run.dir, "builder", false, &FakeTeardown::default()).unwrap();
+
+        let persisted = load_run(&run.dir).unwrap();
+        assert_eq!(
+            persisted.state.workers["builder"].lifecycle,
+            WorkerLifecycle::Ended
+        );
+        assert_eq!(
+            persisted.state.workers["reviewer"].lifecycle,
+            WorkerLifecycle::Orphaned
+        );
     }
 
     #[test]

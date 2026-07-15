@@ -79,7 +79,7 @@ pub fn create_run(state_dir: &Path, state: RunState) -> Result<RunBoard, RunErro
         dir: run_dir,
         state,
     };
-    if let Err(error) = save_run_with_hook(&run, &HookMetadata::default()) {
+    if let Err(error) = write_run_with_hook(&run, &HookMetadata::default()) {
         let _ = fs::remove_dir_all(&run.dir);
         return Err(error);
     }
@@ -96,9 +96,10 @@ pub fn load_run(run_dir: &Path) -> Result<RunBoard, RunError> {
     })
 }
 
-pub fn save_run(run: &RunBoard) -> Result<(), RunError> {
+#[cfg(test)]
+pub(crate) fn save_run(run: &RunBoard) -> Result<(), RunError> {
     let hook = load_hook_metadata(&run.dir)?;
-    save_run_with_hook(run, &hook)
+    write_run_with_hook(run, &hook)
 }
 
 pub fn load_hook_metadata(run_dir: &Path) -> Result<HookMetadata, RunError> {
@@ -106,7 +107,12 @@ pub fn load_hook_metadata(run_dir: &Path) -> Result<HookMetadata, RunError> {
     Ok(toml::from_str::<HookEnvelope>(&contents)?.hook)
 }
 
-pub fn save_run_with_hook(run: &RunBoard, hook: &HookMetadata) -> Result<(), RunError> {
+#[cfg(test)]
+pub(crate) fn save_run_with_hook(run: &RunBoard, hook: &HookMetadata) -> Result<(), RunError> {
+    write_run_with_hook(run, hook)
+}
+
+fn write_run_with_hook(run: &RunBoard, hook: &HookMetadata) -> Result<(), RunError> {
     let mut contents = toml::to_string_pretty(&run.state)?;
     if hook != &HookMetadata::default() {
         if let Some(god_workspace_id) = &hook.god_workspace_id {
@@ -176,7 +182,7 @@ where
         let mut run = load_run(run_dir).map_err(E::from)?;
         let mut hook = load_hook_metadata(run_dir).map_err(E::from)?;
         let value = update(&mut run, &mut hook)?;
-        save_run_with_hook(&run, &hook).map_err(E::from)?;
+        write_run_with_hook(&run, &hook).map_err(E::from)?;
         Ok((run, value))
     })();
     let unlock = FileExt::unlock(&lock_file)
@@ -263,7 +269,8 @@ pub fn append_event(run_dir: &Path, event: &Value) -> Result<(), RunError> {
     Ok(())
 }
 
-pub fn mark_ended(run: &mut RunBoard) -> Result<(), RunError> {
+#[cfg(test)]
+pub(crate) fn mark_ended(run: &mut RunBoard) -> Result<(), RunError> {
     let previous = run.state.lifecycle;
     run.state.lifecycle = RunLifecycle::Ended;
     if let Err(error) = save_run(run) {
@@ -590,6 +597,14 @@ lifecycle = "running"
 
         assert!(!worker.adopted);
         assert_eq!(worker.lifecycle, WorkerLifecycle::Running);
+    }
+
+    #[test]
+    fn unlocked_save_helpers_are_test_only() {
+        let source = include_str!("run.rs");
+        assert!(source.contains("#[cfg(test)]\npub(crate) fn save_run("));
+        assert!(source.contains("#[cfg(test)]\npub(crate) fn save_run_with_hook("));
+        assert!(source.contains("fn write_run_with_hook("));
     }
 
     #[test]
