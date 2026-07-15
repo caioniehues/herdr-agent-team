@@ -219,8 +219,16 @@ pub fn list_active_runs(state_dir: &Path) -> Result<Vec<RunBoard>, RunError> {
             }
         }
     }
-    runs.sort_unstable_by(|left, right| left.dir.cmp(&right.dir));
+    runs.sort_unstable_by(|left, right| {
+        run_creation_timestamp(&left.dir)
+            .cmp(&run_creation_timestamp(&right.dir))
+            .then_with(|| left.dir.cmp(&right.dir))
+    });
     Ok(runs)
+}
+
+fn run_creation_timestamp(path: &Path) -> Option<u128> {
+    path.file_name()?.to_str()?.rsplit_once('-')?.1.parse().ok()
 }
 
 pub fn match_pane(state_dir: &Path, pane_id: &str) -> Result<Option<MatchedWorker>, RunError> {
@@ -545,6 +553,28 @@ lifecycle = "running"
         assert!(list_active_runs(temp.path())
             .expect("list missing runs directory")
             .is_empty());
+    }
+
+    #[test]
+    fn active_runs_sort_by_creation_suffix_not_team_name() {
+        let temp = TempDir::new();
+        let runs = temp.path().join(RUNS_DIR);
+        fs::create_dir(&runs).unwrap();
+
+        for (directory, team) in [("wave6b-100", "wave6b"), ("dod6-200", "dod6")] {
+            let dir = runs.join(directory);
+            fs::create_dir(&dir).unwrap();
+            let run = RunBoard {
+                dir,
+                state: run_state(team, &format!("pane-{team}")),
+            };
+            save_run_with_hook(&run, &HookMetadata::default()).unwrap();
+        }
+
+        let mut active = list_active_runs(temp.path()).unwrap();
+        assert_eq!(active[0].state.spec.name, "wave6b");
+        assert_eq!(active[1].state.spec.name, "dod6");
+        assert_eq!(active.pop().unwrap().state.spec.name, "dod6");
     }
 
     #[test]
