@@ -44,3 +44,9 @@ drift here first.
   distinct from the repository's authored `AGENTS.md`, which remains untouched.
 - **Status flip** — a Herdr agent-status transition (idle/working/blocked/
   done/unknown). Flips to `blocked`/`done` trigger the report flow.
+- **Adopted worker** — an existing pane registered into a run as a full
+  worker (`team adopt`, ADR-0009): protocol generated at adoption,
+  `adopted = true` in run state. Kill releases it (notice injected)
+  instead of closing its pane.
+- **Released** — terminal lifecycle of an adopted worker after `team
+  kill`: no longer a team member, pane untouched, report protocol void.

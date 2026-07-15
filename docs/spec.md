@@ -294,3 +294,34 @@ denies herdr socket access (`Operation not permitted`), so a plain-codex
 worker can only run `msg` behind an interactive approval. Teams relying on
 codex worker→god messaging should configure a permissive launcher entry
 (see `examples/agents.toml`); the shipped default stays sandboxed.
+
+## 12. `team adopt` — existing panes as workers (added 2026-07-15, ADR-0009)
+
+```
+herdr-agent-team adopt <pane-id> --name <worker> [--role <text>]
+                 [--brief <path>] [--run <run-dir>] [--team <name>]
+```
+
+- **Membership:** full worker. Generates the worker's immutable protocol at
+  adoption time (identity, report path, sentinel, self-contained `msg`
+  invocation), pointer-injects it (one `pane run`, submit-verified per
+  launcher policy), records the worker in `run.toml` with `adopted = true`.
+  Hook push, `msg`, `status`, inbox — identical to spawned workers.
+  Immutability invariant: **immutable since generation**.
+- **Run targeting:** newest active run by default; `--run` explicit;
+  several active runs without `--run` = hard error listing candidates. No
+  active run → bootstrap an ad-hoc star run (name from `--team`, default
+  `adhoc`; god = current pane; cwd = adopted pane's cwd; reconstructed
+  minimal spec lives only in `run.toml`).
+- **Topology:** star-only. Adopting into a mesh run is a hard error
+  (immutable peer tables would go stale — ADR-0009 defers the amendment
+  mechanism).
+- **Agent kind:** from the pane's detected agent label, mapped into the
+  launcher table. Unknown label → conservative synthetic policy
+  (`submit_verify = true`, `queues_midturn = false`) + warning naming the
+  `agents.toml` entry to add. No detected agent → refuse.
+- **Brief:** `--brief` injects brief + protocol pointers in one line
+  (launch-prompt style); otherwise protocol pointer only.
+- **Kill semantics:** `team kill` closes only plugin-created workspaces.
+  Adopted workers are marked `released` in `run.toml` and receive one
+  injected release notice; their panes and workspaces survive.
