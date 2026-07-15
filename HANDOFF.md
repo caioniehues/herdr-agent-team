@@ -39,15 +39,15 @@ Last updated 2026-07-15 (post research wave + docs overhaul).
 
 ## NEXT steps (in order)
 
-0. **v0.3.0 RELEASED 2026-07-15** — hook-correctness wave shipped (PRs #12 +
-   #13 merged, tag pushed, #4 #10 #11 #3 closed; 114 tests; all fixes
-   live-verified incl. the exact #10 watched-worker injection scenario).
-   Follow-ups filed: #14 spawn dies midway leaving `pending` lifecycles;
-   #15 generated protocol still says workers-never-git (new contract:
-   workers commit/push/PR on own branch, god reviews/merges); #16 manifest
-   event changes need plugin unlink+link (disable/enable serves cache).
-1. **Roadmap step 2 / Issue #5:** persist full `agent_session
-   {source,agent,kind,value}` + herdr session identity.
+0. **v0.4.0 RELEASED 2026-07-15** (same day as v0.3.0 hook-correctness
+   wave): #5 full `agent_session {source,agent,kind,value}` +
+   `HerdrSessionIdentity` (HERDR_SOCKET_PATH/HERDR_SESSION) persisted per
+   run at spawn/adopt, legacy run.toml still loads; #15 generated protocols
+   now encode the git contract by worktree flag (worktree workers
+   commit/push/PR their own branch; shared-tree and adopted panes stay
+   no-git). 117 tests. Open follow-ups: #14 spawn dies midway (pending
+   lifecycles), #16 manifest changes need plugin unlink+link, #17 serial
+   90s agent-info timeout delays worker N+1.
 3. **Roadmap step 3 / Issue #6:** schema-gated metadata tokens (spec §8 step
    3) + aggregate notifications.
 4. **Roadmap step 4 / Issue #7:** native board pane (`[[panes]]` + action +
@@ -61,8 +61,10 @@ Last updated 2026-07-15 (post research wave + docs overhaul).
    and limux backend extraction.
 
 Work them via codex pane workers (never implement in this repo from the
-coordinator — memory rule), one ticket per worker worktree, coordinator
-commits and gates centrally.
+coordinator — memory rule), one ticket per worker worktree. Git contract
+(2026-07-15): worktree workers commit/push/PR their own branch; coordinator
+reviews, runs the shared gate once centrally, merges, and releases on Caio's
+word.
 
 ## Context that doesn't fit the docs
 
