@@ -39,12 +39,18 @@ Last updated 2026-07-15 (post research wave + docs overhaul).
 
 ## NEXT steps (in order)
 
-0. **Waves 5+6 ready to start** — coordinator kickoff prompt at
-   `.scratch/wave5-kickoff.md` (fresh-session ready). Wave 5: #22 seam
-   unification, then #14+#17 spawn robustness. Wave 6: #23 team wait +
-   #24 god CLI ergonomics + #25 god-side skill. Roadmap reshaped in spec §8
-   (god-lens review 2026-07-15); #8 = socket adapter only, #9 = restart +
-   previews.
+0. **v0.7.0 + v0.8.0 RELEASED 2026-07-15** — waves 5+6 COMPLETE.
+   Wave 5 (#22 one HerdrApi seam + shared FakeHerdr; #14 spawn --resume
+   with launch checkpoints; #17 parallel launch + lazy agent-info; flock'd
+   cross-process run.toml). Wave 6 (#23 wait verbs exits 0-4 over durable
+   truth; #24 inbox/report read-marks + STOPPED-NOT-DONE + zero-ceremony
+   env + msg fan-out; #25 skills/god/SKILL.md). 151 tests. Learnings:
+   `docs/learnings/wave5-2026-07-15.md`, `wave6-2026-07-15.md` — READ THEM
+   (gate 15x rule for threaded PRs, live-DoD discipline, version-bump trap).
+   CI: repo-specific review gate + issue triage workflows live; 5 triage
+   labels created. NEXT candidates: #28 (unlocked run.toml writers — same
+   bug class as PR #27 MAJOR-3), #29 (stuck-pending adoptee), #16 (relink
+   docs), then #8 socket backend (seam ready), #9 restart + previews.
 0. **v0.6.0 RELEASED 2026-07-15** (#7): native board pane = the human's
    CONTROL DECK (variant-D prototype verdict; branch prototype/board-pane is
    the primary source). `[[panes]] board` + open-board action + report: link
