@@ -422,6 +422,9 @@ herdr-agent-team msg <target> <text> [--attention] [--run <run-dir>]
 - `<target>`: `god` or a worker name from the active run. Resolution: name →
   pane id via `run.toml`. Ambiguity or unknown name = hard error listing
   candidates (never guess — marketplace pattern #2).
+- God-side fan-out accepts `all` or a comma-separated worker list. Every
+  distinct worker uses the same readiness gate and outbox discipline.
+  `--attention` remains valid only for the singular `god` target.
 - Delivery: one `herdr pane run <pane_id> <text>`; submission verified per
   launcher policy (`herdr agent wait --status working`, one empty `pane run`
   retry on timeout — ADR-0006 discipline).
@@ -508,3 +511,41 @@ herdr-agent-team adopt <pane-id> --name <worker> [--role <text>]
 - **Kill semantics:** `team kill` closes only plugin-created workspaces.
   Adopted workers are marked `released` in `run.toml` and receive one
   injected release notice; their panes and workspaces survive.
+
+## 13. God CLI ergonomics — durable wait and inbox (issues #23, #24)
+
+These verbs read the run-board and inbox files only. They never infer
+completion from Herdr pane attention/done presentation, avoiding the
+done-versus-idle trap and upstream #1439's closed-pane subscription hang.
+
+```
+herdr-agent-team wait [--run <dir>] --until any-report|report:<worker>|all-reports|blocked|attention|all-terminal [--timeout <seconds>] [--json]
+herdr-agent-team inbox [--run <dir>] [--unread] [--json]
+herdr-agent-team report <worker> [--run <dir>] [--head N]
+```
+
+- `wait` polls through `GodCollector`, a small snapshot seam intended for the
+  future socket backend. Default timeout is 300 seconds and is always bounded.
+  Reached exits 0, timeout exits 2, and an orphaned/failed required worker
+  without its report exits 3. A run that becomes inactive during the wait
+  returns the distinct `inactive_run` verdict and exits 4; an explicitly
+  selected inactive run is rejected before polling. Usage, resolution, and I/O
+  errors exit 1. `--json` emits one stable single-line verdict.
+- Report-file existence is completion truth. `blocked` and `attention` come
+  from durable hook metadata; `all-terminal` comes from worker lifecycle.
+  `all-terminal` is literal: failed and orphaned workers count as terminal and
+  the condition exits 0. For `blocked`/`attention`, an all-terminal team that
+  cannot satisfy the condition returns the dead-worker verdict instead.
+- `inbox` emits one worker row with report presence/mtime, attention, read
+  state, and `STOPPED-NOT-DONE` when an idle/done pointer state has no report.
+  `--unread` retains missing reports and reports newer than their read mark.
+- `report` prints the absolute report path, or at most `N` lines with
+  `--head`, then transactionally persists the report mtime as its read mark in
+  `run.toml` so the mark survives process and agent-context restarts.
+  Printing the durable path is an intentional pointer handoff and counts as
+  read even when `--head` is omitted.
+- When `HERDR_PLUGIN_STATE_DIR` / `HERDR_PLUGIN_CONFIG_DIR` are absent, the
+  executable derives Herdr's stable XDG/home plugin layout using its manifest
+  id `caioniehues.agent-team`. Explicit environment always wins.
+  This fallback targets release Herdr's `herdr/` app directory; debug Herdr's
+  `herdr-dev/` layout requires explicit injected environment.

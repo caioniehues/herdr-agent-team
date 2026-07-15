@@ -79,6 +79,9 @@ pub enum MsgError {
     #[error("--attention is only valid for a worker message to god")]
     AttentionTarget,
 
+    #[error("message fan-out failed: {0}")]
+    Fanout(String),
+
     #[error("--attention requires HERDR_PANE_ID for a recorded worker pane")]
     AttentionSource,
 }
@@ -112,18 +115,88 @@ enum MessageOutcome {
 }
 
 pub fn msg_command(args: &[String]) -> Result<(), MsgError> {
-    let arguments = parse_msg_arguments(args)?;
-    if arguments.attention && arguments.target != "god" {
-        return Err(MsgError::AttentionTarget);
+    let parsed = parse_msg_arguments(args)?;
+    if parsed.attention && parsed.target != "god" {
+        return Err(arguments(
+            "--attention is only valid with the singular god target",
+        ));
     }
-    let run = select_run(arguments.run_dir.as_deref())?;
+    let run = select_run(parsed.run_dir.as_deref())?;
     let launchers = load_launchers()?;
     let herdr = HerdrClient::from_env();
-    send_message(&run, &launchers, &arguments.target, &arguments.text, &herdr)?;
-    if arguments.attention {
-        request_attention(&run, &arguments.target, &arguments.text, &herdr)?;
+    send_to_targets(&run, &launchers, &parsed.target, &parsed.text, &herdr)?;
+    if parsed.attention {
+        request_attention(&run, &parsed.target, &parsed.text, &herdr)?;
     }
     Ok(())
+}
+
+fn send_to_targets<H: HerdrApi>(
+    run: &RunBoard,
+    launchers: &LauncherTable,
+    target: &str,
+    text: &str,
+    herdr: &H,
+) -> Result<(), MsgError> {
+    let names = if target == "all" {
+        let names = run
+            .state
+            .workers
+            .iter()
+            .filter(|(_, worker)| !terminal_lifecycle(worker.lifecycle))
+            .map(|(name, _)| name.clone())
+            .collect::<Vec<_>>();
+        if names.is_empty() {
+            return Err(arguments("no live workers to message"));
+        }
+        names
+    } else if target.contains(',') {
+        let names = target
+            .split(',')
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        if names.is_empty() {
+            return Err(arguments("target list is empty"));
+        }
+        names
+    } else {
+        vec![target.to_owned()]
+    };
+    let mut seen = BTreeSet::new();
+    let names = names
+        .into_iter()
+        .filter(|name| seen.insert(name.clone()))
+        .collect::<Vec<_>>();
+
+    // Resolve the complete set before the first side effect.
+    for name in &names {
+        resolve_target(run, name)?;
+    }
+
+    let errors = names
+        .iter()
+        .filter_map(|name| {
+            send_message(run, launchers, name, text, herdr)
+                .err()
+                .map(|error| format!("{name}: {error}"))
+        })
+        .collect::<Vec<_>>();
+    if !errors.is_empty() {
+        return Err(MsgError::Fanout(errors.join("; ")));
+    }
+    Ok(())
+}
+
+fn terminal_lifecycle(lifecycle: crate::types::WorkerLifecycle) -> bool {
+    matches!(
+        lifecycle,
+        crate::types::WorkerLifecycle::Failed
+            | crate::types::WorkerLifecycle::Ended
+            | crate::types::WorkerLifecycle::Released
+            | crate::types::WorkerLifecycle::Orphaned
+    )
 }
 
 pub(crate) fn deliver_queued_message<H: HerdrApi>(
@@ -739,6 +812,110 @@ mod tests {
                 Call::PaneGet("worker-pane".to_owned()),
             ]
         );
+    }
+
+    #[test]
+    fn fanout_all_and_subset_reuse_delivery_and_outbox_discipline() {
+        let temp = TempDir::new();
+        let mut run = fixture_run(temp.path(), "a", "codex");
+        let b = run.state.spec.workers[0].clone();
+        run.state.spec.workers.push(WorkerSpec {
+            name: "b".into(),
+            ..b
+        });
+        let mut bstate = run.state.workers["a"].clone();
+        bstate.pane_id = Some("worker-pane-b".into());
+        run.state.workers.insert("b".into(), bstate);
+        let herdr = fake_herdr("codex", Some("working"), []);
+        send_to_targets(&run, &conservative_table(), "all", "broadcast", &herdr).unwrap();
+        assert_eq!(
+            fs::read_to_string(temp.path().join("outbox/a/00000000000000000001.msg")).unwrap(),
+            "broadcast"
+        );
+        assert_eq!(
+            fs::read_to_string(temp.path().join("outbox/b/00000000000000000001.msg")).unwrap(),
+            "broadcast"
+        );
+        send_to_targets(&run, &conservative_table(), "b,a,b", "subset", &herdr).unwrap();
+        assert_eq!(
+            fs::read_to_string(temp.path().join("outbox/a/00000000000000000002.msg")).unwrap(),
+            "subset"
+        );
+        assert_eq!(
+            fs::read_to_string(temp.path().join("outbox/b/00000000000000000002.msg")).unwrap(),
+            "subset"
+        );
+    }
+
+    #[test]
+    fn fanout_prevalidates_filters_terminal_and_collects_delivery_errors() {
+        let temp = TempDir::new();
+        let mut run = fixture_run(temp.path(), "a", "codex");
+        let spec = run.state.spec.workers[0].clone();
+        for (name, pane) in [("b", "worker-pane-b"), ("dead", "worker-pane-dead")] {
+            run.state.spec.workers.push(WorkerSpec {
+                name: name.into(),
+                ..spec.clone()
+            });
+            let mut state = run.state.workers["a"].clone();
+            state.pane_id = Some(pane.into());
+            if name == "dead" {
+                state.lifecycle = WorkerLifecycle::Orphaned;
+            }
+            run.state.workers.insert(name.into(), state);
+        }
+
+        let prevalidate = fake_herdr("codex", Some("working"), []);
+        let error = send_to_targets(
+            &run,
+            &conservative_table(),
+            "a,missing,b",
+            "text",
+            &prevalidate,
+        )
+        .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("unknown message target `missing`"));
+        assert!(prevalidate.typed_calls().is_empty());
+
+        let filtered = fake_herdr("codex", Some("working"), []);
+        send_to_targets(&run, &conservative_table(), "all", "text", &filtered).unwrap();
+        assert!(!temp.path().join("outbox/dead").exists());
+
+        let failing = fake_herdr("codex", Some("idle"), [WaitOutcome::Reached]);
+        failing
+            .missing_panes
+            .borrow_mut()
+            .insert("worker-pane".into());
+        let error =
+            send_to_targets(&run, &conservative_table(), "a,b", "text", &failing).unwrap_err();
+        assert!(error.to_string().contains("a:"));
+        assert!(failing
+            .typed_calls()
+            .iter()
+            .any(|call| matches!(call, Call::PaneRun(pane, _) if pane == "worker-pane-b")));
+    }
+
+    #[test]
+    fn attention_rejects_non_singular_god_before_run_resolution() {
+        let error = msg_command(&["all".into(), "text".into(), "--attention".into()]).unwrap_err();
+        assert!(matches!(error, MsgError::Arguments(_)));
+    }
+
+    #[test]
+    fn fanout_all_rejects_a_run_with_no_live_workers() {
+        let temp = TempDir::new();
+        let mut run = fixture_run(temp.path(), "dead", "codex");
+        run.state.workers.get_mut("dead").unwrap().lifecycle = WorkerLifecycle::Ended;
+        let herdr = fake_herdr("codex", Some("idle"), []);
+
+        let error =
+            send_to_targets(&run, &default_launcher_table(), "all", "text", &herdr).unwrap_err();
+
+        assert!(matches!(error, MsgError::Arguments(_)));
+        assert!(error.to_string().contains("no live workers to message"));
+        assert!(herdr.typed_calls().is_empty());
     }
 
     #[test]

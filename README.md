@@ -29,6 +29,9 @@ of polling.
   run, delivers with a single verified `pane run`, and — for agents that can't
   safely receive mid-turn — queues to a per-target **outbox** that the status
   hook drains the moment the target goes idle. Sender never blocks, no daemon.
+- **God CLI** — `wait` observes durable lifecycle/report truth with bounded
+  timeouts; `inbox` and `report` track unread worker reports; `msg all` and
+  comma-separated targets reuse the same delivery/outbox policy.
 - **Star or mesh topology** — per-team flag. Star (default): workers report only
   to the god. Mesh: workers also get a peer table and message each other through
   the same `msg` verb with a structured envelope.
@@ -84,6 +87,16 @@ Local development:
 cargo build --release
 herdr plugin link .
 ```
+
+For direct terminal use, put the linked or installed binary on `PATH` once:
+
+```bash
+mkdir -p ~/.local/bin
+ln -sf /path/to/herdr-agent-team/target/release/herdr-agent-team ~/.local/bin/herdr-agent-team
+```
+
+Without Herdr-injected environment variables, the binary resolves the stable
+plugin state/config directories from the standard XDG or home layout.
 
 ## Documentation map
 

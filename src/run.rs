@@ -140,6 +140,10 @@ pub fn save_run_with_hook(run: &RunBoard, hook: &HookMetadata) -> Result<(), Run
             contents.push_str("\n[hook.attention_pending]\n");
             contents.push_str(&toml::to_string(&hook.attention_pending)?);
         }
+        if !hook.report_read_mtime_ms.is_empty() {
+            contents.push_str("\n[hook.report_read_mtime_ms]\n");
+            contents.push_str(&toml::to_string(&hook.report_read_mtime_ms)?);
+        }
         if !hook.aggregate_notifications.is_empty() {
             contents.push_str("\n[hook.aggregate_notifications]\n");
             contents.push_str(&toml::to_string(&hook.aggregate_notifications)?);

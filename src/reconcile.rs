@@ -80,6 +80,9 @@ pub enum ReconciliationAction {
 /// Additive hook-owned metadata persisted as `[hook]` in `run.toml`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HookMetadata {
+    /// Last report modification time acknowledged by `report` (spec section 13).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub report_read_mtime_ms: BTreeMap<String, u64>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub worker_status: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
