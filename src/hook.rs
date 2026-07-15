@@ -273,11 +273,61 @@ fn inject_pointer<H: HerdrApi>(
     Ok(())
 }
 
+/// A `.claim` older than this can only come from a drain that died between
+/// claim and delivery (issue #65): a live claim is held for at most one
+/// submission-verification cycle (~1 minute), never minutes.
+const STALE_CLAIM_THRESHOLD: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Requeue claims orphaned by a crashed drain so they stay retryable
+/// (spec §11). Age-gated so a concurrent invocation's live claim is never
+/// swept back (which would double-deliver — the defect #59 guarantee).
+fn sweep_stale_claims(run_dir: &Path, target: &str) -> Result<(), HookError> {
+    let outbox_dir = run_dir.join("outbox").join(target);
+    let entries = match std::fs::read_dir(&outbox_dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(source) => {
+            return Err(HookError::Io {
+                action: "read message outbox",
+                path: outbox_dir,
+                source,
+            })
+        }
+    };
+    for entry in entries {
+        let entry = entry.map_err(|source| HookError::Io {
+            action: "read message outbox entry",
+            path: outbox_dir.clone(),
+            source,
+        })?;
+        let path = entry.path();
+        if path.extension().and_then(|extension| extension.to_str()) != Some("claim") {
+            continue;
+        }
+        let stale = entry
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .ok()
+            .and_then(|modified| modified.elapsed().ok())
+            .is_some_and(|age| age >= STALE_CLAIM_THRESHOLD);
+        if !stale {
+            continue;
+        }
+        // Atomic and best-effort: ENOENT means a concurrent sweep or the
+        // owning drain already handled this claim.
+        let _ = std::fs::rename(&path, path.with_extension("msg"));
+    }
+    Ok(())
+}
+
 fn drain_outbox<E, F>(run_dir: &Path, target: &str, mut deliver: F) -> Result<(), HookError>
 where
     E: Display,
     F: FnMut(&str) -> Result<(), E>,
 {
+    // Sweep BEFORE listing so a crashed drain's orphaned claim re-enters this
+    // very drain pass instead of waiting for yet another status flip.
+    sweep_stale_claims(run_dir, target)?;
     for path in queued_message_paths(run_dir, target)? {
         // Atomically claim the message before consuming it. Concurrent hook
         // invocations both list the same queued entry (defect #59); the rename
@@ -637,6 +687,49 @@ mod tests {
         assert_eq!(
             herdr.update.borrow().as_ref().unwrap().title.as_deref(),
             Some("ship hook seam")
+        );
+    }
+
+    #[test]
+    fn stale_claim_from_a_crashed_drain_is_swept_back_and_delivered() {
+        let temp = TempDir::new();
+        let run = fixture_run(temp.path(), "worker-pane");
+        // Simulate a drain that died between claim and delivery (issue #65):
+        // the message exists only as an aged `.claim` file, invisible to the
+        // `.msg` listing.
+        let outbox = run.dir.join("outbox/builder");
+        fs::create_dir_all(&outbox).expect("create fixture outbox");
+        let stale = outbox.join("00000000000000000001.claim");
+        fs::write(&stale, "orphaned once").expect("write stale claim");
+        let crashed_at = SystemTime::now() - std::time::Duration::from_secs(3_600);
+        fs::File::options()
+            .write(true)
+            .open(&stale)
+            .expect("open stale claim")
+            .set_times(fs::FileTimes::new().set_modified(crashed_at))
+            .expect("backdate stale claim");
+        let mut deliveries = Vec::new();
+
+        drain_outbox(&run.dir, "builder", |text| {
+            deliveries.push(text.to_owned());
+            Ok::<(), std::convert::Infallible>(())
+        })
+        .expect("drain outbox with stale claim");
+
+        assert_eq!(
+            deliveries,
+            ["orphaned once"],
+            "a crashed drain's claim must stay retryable (spec §11), not orphaned forever"
+        );
+        assert!(!stale.exists(), "swept claim must be consumed");
+        let events = read_events(&run);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event["event"] == "delivered")
+                .count(),
+            1,
+            "exactly one delivered event: {events:?}"
         );
     }
 
