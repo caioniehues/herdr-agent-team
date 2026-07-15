@@ -18,6 +18,7 @@ pub mod msg;
 pub mod paths;
 pub mod reconcile;
 pub mod run;
+pub mod socket;
 pub mod spawn;
 pub mod spec;
 pub mod status_kill;

@@ -61,6 +61,9 @@ pub struct GodSnapshot {
 /// Polling seam intentionally mirrors `BoardCollector`; #8 can replace it.
 pub trait GodCollector {
     fn collect(&self) -> Result<GodSnapshot, GodCliError>;
+    fn wait_for_change(&self, timeout: Duration) {
+        thread::sleep(timeout);
+    }
 }
 
 pub struct RunGodCollector {
@@ -177,9 +180,13 @@ pub fn report_command(args: &[String]) -> Result<(), GodCliError> {
 pub fn wait_command(args: &[String]) -> Result<WaitVerdict, GodCliError> {
     let (run_dir, until, timeout, json) = parse_wait(args)?;
     let run_dir = select_wait_run(run_dir.as_deref())?;
-    let collector = RunGodCollector { run_dir };
+    let fallback = RunGodCollector { run_dir };
+    let collector: Box<dyn GodCollector> = match crate::socket::SocketClient::try_from_env() {
+        Some(socket) => Box::new(crate::socket::SocketGodCollector { socket, fallback }),
+        None => Box::new(fallback),
+    };
     validate_until(&collector.collect()?, &until)?;
-    let verdict = wait_with(&collector, &until, timeout)?;
+    let verdict = wait_with(collector.as_ref(), &until, timeout)?;
     if json {
         println!("{}", serde_json::to_string(&verdict)?);
     } else {
@@ -189,7 +196,7 @@ pub fn wait_command(args: &[String]) -> Result<WaitVerdict, GodCliError> {
 }
 
 pub fn wait_with(
-    collector: &impl GodCollector,
+    collector: &(impl GodCollector + ?Sized),
     until: &Until,
     timeout: Duration,
 ) -> Result<WaitVerdict, GodCliError> {
@@ -208,7 +215,7 @@ pub fn wait_with(
         if start.elapsed() >= timeout {
             return Ok(verdict(VerdictKind::Timeout, until, None, start));
         }
-        thread::sleep(POLL_INTERVAL.min(timeout.saturating_sub(start.elapsed())));
+        collector.wait_for_change(POLL_INTERVAL.min(timeout.saturating_sub(start.elapsed())));
     }
 }
 
