@@ -122,7 +122,7 @@ Given a spec (file or shorthand):
      reach the god.
    - **mesh**: all star content plus the peer table and message envelope.
    Repository-authored `AGENTS.md` files remain untouched and in effect.
-5. Per worker:
+5. Launch all workers concurrently. Each worker independently:
    a. Launch agent CLI via `herdr pane run` in that workspace. **cwd is set at
       pane creation, never via a `cd` in the prompt.**
    b. Inject one launch-prompt line containing the absolute brief path and that
@@ -130,7 +130,21 @@ Given a spec (file or shorthand):
       When `submit_verify = true`, verify with
       `herdr agent wait --status working`; on timeout, retry once with an empty
       `pane run` and verify again.
-6. Record every worker's herdr agent id/name in `run.toml`.
+   c. Persist the worker as `running` with launch checkpoint `brief_submitted`.
+      Run-board mutation and the existing atomic temp-file rename are serialized,
+      so concurrent checkpoints cannot overwrite one another.
+6. After brief submission, poll lazily for each optional Herdr `agent_session`.
+   Persist it when available; missing identity does not delay this or another
+   worker's brief and does not fail an otherwise running worker.
+
+`team spawn --resume <run-dir>` resumes an interrupted active run. Workers with
+`lifecycle = running` are untouched. For each `pending` worker, resume reuses a
+live recorded pane and existing worktree, creates any absent resource, and
+recreates a workspace when the recorded pane is gone. Existing immutable worker
+protocols are reused; missing protocols are generated before launch. Resume then
+runs the same concurrent launch + brief flow and advances checkpoints from
+`pending` to `resources_ready` to `brief_submitted`. A run with no pending
+workers is an idempotent no-op with a clear message.
 
 ## 5. Report flow (push, not poll)
 
