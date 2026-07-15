@@ -233,7 +233,11 @@ fn allocate_run_dir(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{GodSpec, TeamSpec, Topology, WorkerLifecycle, WorkerRunState, WorkerSpec};
+    use crate::herdr::AgentSession;
+    use crate::types::{
+        GodSpec, HerdrSessionIdentity, TeamSpec, Topology, WorkerLifecycle, WorkerRunState,
+        WorkerSpec,
+    };
     use serde_json::json;
     use std::collections::BTreeMap;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -277,6 +281,7 @@ mod tests {
                 workspace_id: Some("workspace-1".to_owned()),
                 pane_id: Some(pane_id.to_owned()),
                 agent_id: Some("agent-1".to_owned()),
+                agent_session: None,
                 worktree_path: Some(PathBuf::from("/tmp/worktree")),
                 adopted: false,
                 lifecycle: WorkerLifecycle::Running,
@@ -301,6 +306,7 @@ mod tests {
                 }],
             },
             god_pane_id: "god-pane".to_owned(),
+            herdr_session: Default::default(),
             workers,
             lifecycle: RunLifecycle::Active,
         }
@@ -324,6 +330,69 @@ mod tests {
         assert!(run.dir.join(RUN_FILE).is_file());
         assert!(run.dir.join(INBOX_DIR).is_dir());
         assert_eq!(load_run(&run.dir).expect("load run"), run);
+    }
+
+    #[test]
+    fn run_toml_round_trips_full_agent_session_and_herdr_identity() {
+        let temp = TempDir::new();
+        let mut state = run_state("alpha", "pane-alpha");
+        state.herdr_session = HerdrSessionIdentity::from_environment(
+            Some(PathBuf::from("/run/user/1000/herdr/named.sock")),
+            Some("named".to_owned()),
+        );
+        state.workers.get_mut("builder").unwrap().agent_session = Some(AgentSession {
+            source: "herdr:codex".to_owned(),
+            agent: "codex".to_owned(),
+            kind: "id".to_owned(),
+            value: "opaque-session".to_owned(),
+        });
+
+        let run = create_run(temp.path(), state.clone()).expect("create run");
+        let persisted = load_run(&run.dir).expect("load run");
+        assert_eq!(persisted.state, state);
+
+        let contents = fs::read_to_string(run.dir.join(RUN_FILE)).expect("read run TOML");
+        assert!(contents.contains("[herdr_session]"));
+        assert!(contents.contains("[workers.builder.agent_session]"));
+    }
+
+    #[test]
+    fn old_run_toml_without_session_fields_still_loads() {
+        let state: RunState = toml::from_str(
+            r#"
+god_pane_id = "god-pane"
+lifecycle = "active"
+
+[spec]
+name = "legacy"
+topology = "star"
+cwd = "/tmp/project"
+
+[spec.god]
+target = "self"
+
+[[spec.workers]]
+name = "builder"
+agent = "codex"
+role = "builder"
+worktree = false
+brief = "brief.md"
+
+[workers.builder]
+workspace_id = "workspace-1"
+pane_id = "pane-1"
+agent_id = "opaque-id"
+lifecycle = "running"
+"#,
+        )
+        .expect("deserialize old run TOML");
+
+        assert!(state.herdr_session.is_empty());
+        assert_eq!(
+            state.workers["builder"].agent_id.as_deref(),
+            Some("opaque-id")
+        );
+        assert_eq!(state.workers["builder"].agent_session, None);
     }
 
     #[test]

@@ -405,12 +405,14 @@ mod tests {
                     }],
                 },
                 god_pane_id: "god-pane".to_owned(),
+                herdr_session: Default::default(),
                 workers: BTreeMap::from([(
                     worker_name,
                     WorkerRunState {
                         workspace_id: Some("worker-workspace".to_owned()),
                         pane_id: Some(worker_pane.to_owned()),
                         agent_id: Some("agent-1".to_owned()),
+                        agent_session: None,
                         worktree_path: None,
                         adopted: false,
                         lifecycle: WorkerLifecycle::Running,
@@ -856,6 +858,7 @@ mod tests {
                 workspace_id: Some("reviewer-workspace".to_owned()),
                 pane_id: Some("reviewer-pane".to_owned()),
                 agent_id: Some("agent-2".to_owned()),
+                agent_session: None,
                 worktree_path: None,
                 adopted: false,
                 lifecycle: WorkerLifecycle::Running,

@@ -10,8 +10,8 @@ use crate::spawn::{
     write_worker_protocol, HerdrApi, SpawnError,
 };
 use crate::types::{
-    GodSpec, LauncherEntry, LauncherTable, RunLifecycle, RunState, TeamSpec, Topology,
-    WorkerLifecycle, WorkerRunState, WorkerSpec,
+    current_herdr_session_identity, GodSpec, LauncherEntry, LauncherTable, RunLifecycle, RunState,
+    TeamSpec, Topology, WorkerLifecycle, WorkerRunState, WorkerSpec,
 };
 use std::collections::BTreeMap;
 use std::env;
@@ -332,6 +332,7 @@ fn adopt_resolved<H: HerdrApi>(
             &pane,
         )?,
     };
+    run.state.herdr_session = current_herdr_session_identity();
 
     save_run(&run)?;
     let mut protocol_team = run.state.spec.clone();
@@ -442,6 +443,7 @@ fn bootstrap_run(
             workers: Vec::new(),
         },
         god_pane_id: god_pane_id.to_owned(),
+        herdr_session: current_herdr_session_identity(),
         workers: BTreeMap::new(),
         lifecycle: RunLifecycle::Active,
     };
@@ -457,6 +459,7 @@ fn insert_adopted_worker(state: &mut RunState, worker: &WorkerSpec, pane: &PaneI
             workspace_id: Some(pane.workspace_id.clone()),
             pane_id: Some(pane.pane_id.clone()),
             agent_id: pane.agent_id.clone(),
+            agent_session: pane.agent_session.clone(),
             worktree_path: None,
             adopted: true,
             lifecycle: WorkerLifecycle::Pending,
@@ -546,6 +549,12 @@ mod tests {
                     workspace_id: "workspace-borrowed".to_owned(),
                     agent: agent.map(str::to_owned),
                     agent_id: Some("session-adopted".to_owned()),
+                    agent_session: Some(crate::herdr::AgentSession {
+                        source: "herdr:claude".to_owned(),
+                        agent: "claude".to_owned(),
+                        kind: "id".to_owned(),
+                        value: "session-adopted".to_owned(),
+                    }),
                     agent_status: Some("idle".to_owned()),
                     cwd: Some(root.to_path_buf()),
                 },
@@ -628,12 +637,14 @@ mod tests {
                     workers: vec![existing],
                 },
                 god_pane_id: "god-pane".to_owned(),
+                herdr_session: Default::default(),
                 workers: BTreeMap::from([(
                     "existing".to_owned(),
                     WorkerRunState {
                         workspace_id: Some("workspace-existing".to_owned()),
                         pane_id: Some("pane-existing".to_owned()),
                         agent_id: Some("session-existing".to_owned()),
+                        agent_session: None,
                         worktree_path: None,
                         adopted: false,
                         lifecycle: WorkerLifecycle::Running,
@@ -830,6 +841,13 @@ mod tests {
         assert_eq!(persisted.state.god_pane_id, "god-current");
         assert_eq!(persisted.state.spec.workers.len(), 1);
         assert!(persisted.state.workers["researcher"].adopted);
+        assert_eq!(
+            persisted.state.workers["researcher"]
+                .agent_session
+                .as_ref()
+                .map(|session| session.source.as_str()),
+            Some("herdr:claude")
+        );
         let run_toml = fs::read_to_string(outcome.run.dir.join("run.toml"))
             .expect("read reconstructed run spec");
         assert!(run_toml.contains("name = \"adhoc\""));

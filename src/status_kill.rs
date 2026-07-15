@@ -523,6 +523,7 @@ mod tests {
             workspace_id: Some(workspace.to_owned()),
             pane_id: Some(pane.to_owned()),
             agent_id: Some(format!("agent-{pane}")),
+            agent_session: None,
             worktree_path: Some(worktree_root.join(worktree)),
             adopted: false,
             lifecycle: WorkerLifecycle::Running,
@@ -538,6 +539,7 @@ mod tests {
                 workers,
             },
             god_pane_id: "god-pane".to_owned(),
+            herdr_session: Default::default(),
             workers: BTreeMap::from([
                 (
                     "builder".to_owned(),
@@ -570,6 +572,7 @@ mod tests {
             workspace_id: "workspace-builder".to_owned(),
             agent: Some("codex".to_owned()),
             agent_id: None,
+            agent_session: None,
             status: Some("working".to_owned()),
         }]);
 
@@ -599,6 +602,7 @@ mod tests {
             workspace_id: "workspace-builder".to_owned(),
             agent: Some("codex".to_owned()),
             agent_id: None,
+            agent_session: None,
             status: Some("idle".to_owned()),
         }];
 

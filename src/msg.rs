@@ -573,6 +573,7 @@ mod tests {
                 workspace_id: "workspace".to_owned(),
                 agent: Some(self.agent.clone()),
                 agent_id: Some("session".to_owned()),
+                agent_session: None,
                 agent_status: self.status.clone(),
                 cwd: None,
             })
@@ -632,12 +633,14 @@ mod tests {
                     workers: vec![worker],
                 },
                 god_pane_id: "god-pane".to_owned(),
+                herdr_session: Default::default(),
                 workers: BTreeMap::from([(
                     worker_name.to_owned(),
                     WorkerRunState {
                         workspace_id: Some("workspace".to_owned()),
                         pane_id: Some("worker-pane".to_owned()),
                         agent_id: Some("session".to_owned()),
+                        agent_session: None,
                         worktree_path: None,
                         adopted: false,
                         lifecycle: WorkerLifecycle::Running,
