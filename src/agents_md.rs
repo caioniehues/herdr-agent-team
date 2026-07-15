@@ -6,7 +6,7 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
-/// Line a worker prints after its durable report has been written.
+/// Final line marking a durable report ready for the god.
 pub const COMPLETION_SENTINEL: &str = "HERDR_TEAM_WORKER_COMPLETE";
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -79,12 +79,12 @@ protocol, not the repository's authored `AGENTS.md`.\n\n",
     .expect("writing to String cannot fail");
     out.push_str(
         "2. Include your status, files changed, verification results, and any blockers.\n\
-3. After the report is safely written, print this completion sentinel on its own line:\n\n",
+3. Finish the report with this completion sentinel on its own final line, then print the same sentinel:\n\n",
     );
     writeln!(out, "```text\n{COMPLETION_SENTINEL}\n```\n").expect("writing to String cannot fail");
     out.push_str(
-        "The report is the durable payload. The god receives only a pointer to it when \
-your status changes. Never print the sentinel before the report exists.\n\n",
+        "The report is Result ready only when its final non-empty line is this sentinel. \
+The god receives only a pointer to it when your status changes. Never print the sentinel before the report exists.\n\n",
     );
 
     out.push_str("## God contact\n\n");

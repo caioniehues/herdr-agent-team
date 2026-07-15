@@ -16,6 +16,12 @@ drift here first.
   Delivered as a one-line pointer injection, never inline text.
 - **Report** — a worker's durable output file at `<run>/inbox/<worker>.md`.
   Written by the worker before it goes idle/done.
+- **Completion sentinel** — the final non-empty line
+  `HERDR_TEAM_WORKER_COMPLETE` in a Report, written only after its content is
+  complete.
+- **Result ready** — a Report is ready for `wait report:<worker>` only when
+  it carries the completion sentinel as its final non-empty line; file
+  existence alone is not readiness.
 - **Pointer injection** — the delivery mechanism: one line typed into a pane
   naming durable file paths. Payload stays on disk; context stays lean.
 - **Inbox** — the run dir's `inbox/` directory: report files + `events.jsonl`.
