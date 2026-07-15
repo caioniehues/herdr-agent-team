@@ -135,15 +135,23 @@ pub struct SocketClient<C = HerdrClient> {
 }
 
 impl SocketClient<HerdrClient> {
-    pub fn try_from_env() -> Option<Self> {
-        if std::env::var(BACKEND_ENV).as_deref() != Ok("socket") {
-            return None;
-        }
-        let path = std::env::var_os("HERDR_SOCKET_PATH").map(PathBuf::from)?;
-        Self::connect(path, HerdrClient::from_env()).ok()
+    /// Returns the socket backend when auto-detected, or an explicit `Err` when
+    /// `HERDR_TEAM_BACKEND=socket` is set but initialization fails.
+    #[cfg(unix)]
+    pub fn try_from_env() -> Result<Option<Self>, HerdrError> {
+        let backend = std::env::var(BACKEND_ENV).unwrap_or_default();
+        let socket_path = std::env::var_os("HERDR_SOCKET_PATH").map(PathBuf::from);
+        Self::try_from_parts(&backend, socket_path, HerdrClient::from_env())
+    }
+
+    /// On non-Unix platforms the socket backend is unavailable; always use CLI fallback.
+    #[cfg(not(unix))]
+    pub fn try_from_env() -> Result<Option<Self>, HerdrError> {
+        Ok(None)
     }
 }
 
+#[cfg(unix)]
 impl<C: HerdrApi> SocketClient<C> {
     pub fn connect(socket_path: PathBuf, fallback: C) -> Result<Self, HerdrError> {
         validate_runtime_schema(&fallback.api_schema()?)?;
@@ -417,19 +425,41 @@ impl<C: HerdrApi> SocketClient<C> {
         let row = json!({"id":id,"method":method,"result_type":result_type,"error_code":error_code,"latency_ms":elapsed.as_millis()});
         write_trace(path, &row);
     }
+
+    /// Core of `try_from_env`. Split out so tests can inject a fake fallback and
+    /// a controlled `backend` string without touching process environment variables.
+    pub(crate) fn try_from_parts(
+        backend: &str,
+        socket_path: Option<PathBuf>,
+        fallback: C,
+    ) -> Result<Option<Self>, HerdrError> {
+        if backend != "socket" {
+            return Ok(None);
+        }
+        let path = socket_path.ok_or_else(|| {
+            invalid_msg(
+                "try_from_env",
+                "HERDR_TEAM_BACKEND=socket requires HERDR_SOCKET_PATH to be set",
+            )
+        })?;
+        Self::connect(path, fallback).map(Some)
+    }
 }
 
+#[cfg(unix)]
 pub(crate) struct SubscriptionStream {
     reader: BufReader<UnixStream>,
     max_frame_bytes: usize,
 }
 
+#[cfg(unix)]
 pub(crate) enum SubscriptionPoll {
     Event(SubscriptionEvent),
     Timeout,
     Closed,
 }
 
+#[cfg(unix)]
 impl SubscriptionStream {
     pub(crate) fn poll(&mut self, timeout: Duration) -> Result<SubscriptionPoll, HerdrError> {
         self.reader
@@ -565,7 +595,7 @@ fn write_trace(path: &Path, row: &Value) {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use crate::board::{BoardCollector, BoardError, BoardSnapshot, BoardWorker};
@@ -1093,7 +1123,7 @@ mod tests {
     #[test]
     fn transport_module_has_no_collector_adapter_dependencies() {
         let source = include_str!("socket.rs")
-            .split("#[cfg(test)]")
+            .split("#[cfg(all(test,")
             .next()
             .unwrap();
         assert!(!source.contains(&["crate", "::board"].concat()));
@@ -1284,5 +1314,54 @@ mod tests {
         assert!(!contents.contains("SECRET"));
         assert!(!contents.contains("prompt contents"));
         let _ = fs::remove_file(trace_path);
+    }
+
+    // ── Fix #63 RED tests ────────────────────────────────────────────────────
+    // These call `try_from_parts` which does not exist yet.  They must fail to
+    // compile (= RED) until the fix is applied, at which point they go GREEN.
+
+    #[test]
+    fn explicit_selection_schema_error_is_surfaced_not_silenced() {
+        // FakeHerdr::api_schema() returns "{}", which fails runtime schema validation.
+        // Under explicit HERDR_TEAM_BACKEND=socket, that error must propagate — NOT be
+        // silently converted to None (the old `.ok()` bug).
+        //
+        // The schema check runs before the socket is connected, so no fake server needed.
+        let any_path = std::env::temp_dir().join(format!("unused-schema-{}.sock", rand_id()));
+        let result = SocketClient::try_from_parts("socket", Some(any_path), FakeHerdr::default());
+        let err = result.err().expect(
+            "schema mismatch under explicit HERDR_TEAM_BACKEND=socket must return Err, not Ok(None)",
+        );
+        assert!(
+            !err.to_string().is_empty(),
+            "error must carry a description: {err}"
+        );
+    }
+
+    #[test]
+    fn explicit_selection_missing_socket_path_is_an_error() {
+        // HERDR_TEAM_BACKEND=socket but HERDR_SOCKET_PATH absent → config error, not silent None.
+        let result = SocketClient::try_from_parts("socket", None, FakeHerdr::default());
+        let err = result
+            .err()
+            .expect("missing socket path with explicit HERDR_TEAM_BACKEND=socket must return Err");
+        assert!(
+            err.to_string().contains("HERDR_SOCKET_PATH"),
+            "error must mention the missing env var: {err}"
+        );
+    }
+
+    #[test]
+    fn implicit_selection_connect_failure_stays_silent() {
+        // When backend is not explicitly "socket", try_from_parts must return Ok(None)
+        // immediately — no schema check, no connect attempt, no error propagated.
+        let any_path = std::env::temp_dir().join(format!("unused-implicit-{}.sock", rand_id()));
+        let result = SocketClient::try_from_parts("", Some(any_path.clone()), FakeHerdr::default());
+        assert!(
+            matches!(result, Ok(None)),
+            "implicit/auto selection must silently return Ok(None)"
+        );
+        let result2 = SocketClient::try_from_parts("auto", Some(any_path), FakeHerdr::default());
+        assert!(matches!(result2, Ok(None)));
     }
 }

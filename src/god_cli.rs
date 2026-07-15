@@ -195,12 +195,20 @@ pub fn wait_command(args: &[String]) -> Result<WaitVerdict, GodCliError> {
     let (run_dir, until, timeout, json) = parse_wait(args)?;
     let run_dir = select_wait_run(run_dir.as_deref())?;
     let fallback = RunGodCollector { run_dir };
+    #[cfg(unix)]
     let collector: Box<dyn GodCollector> = match crate::socket::SocketClient::try_from_env() {
-        Some(socket) => Box::new(crate::socket_backend::SocketGodCollector::new(
+        Ok(Some(socket)) => Box::new(crate::socket_backend::SocketGodCollector::new(
             socket, fallback,
         )),
-        None => Box::new(fallback),
+        Ok(None) => Box::new(fallback),
+        Err(e) => {
+            return Err(GodCliError::Usage(format!(
+                "HERDR_TEAM_BACKEND=socket failed: {e}"
+            )))
+        }
     };
+    #[cfg(not(unix))]
+    let collector: Box<dyn GodCollector> = Box::new(fallback);
     validate_until(&collector.collect()?, &until)?;
     let verdict = wait_with(collector.as_ref(), &until, timeout)?;
     if json {
