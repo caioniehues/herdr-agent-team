@@ -375,12 +375,12 @@ fn kill_run_with_backend(
     let mut run = load_run(run_dir)?;
     if run.state.lifecycle == RunLifecycle::Ended {
         if end_worker_lifecycles(&mut run) {
-            persist_kill_state(run_dir, None, true)?;
+            persist_kill_state(run_dir, None, true, &BTreeSet::new())?;
         }
         return Ok(());
     }
 
-    release_adopted_workers(&mut run, backend);
+    let mut failed_workers = release_adopted_workers(&mut run, backend);
 
     let workspace_ids = run
         .state
@@ -392,6 +392,15 @@ fn kill_run_with_backend(
     for workspace_id in workspace_ids {
         if let Err(error) = backend.workspace_close(workspace_id) {
             log_teardown_note("workspace", workspace_id, &error);
+            failed_workers.extend(
+                run.state
+                    .workers
+                    .iter()
+                    .filter(|(_, worker)| {
+                        !worker.adopted && worker.workspace_id.as_deref() == Some(workspace_id)
+                    })
+                    .map(|(name, _)| name.clone()),
+            );
         }
     }
 
@@ -419,7 +428,7 @@ fn kill_run_with_backend(
         }
     }
 
-    persist_kill_state(run_dir, None, true)?;
+    persist_kill_state(run_dir, None, true, &failed_workers)?;
     if dirty_paths.is_empty() {
         Ok(())
     } else {
@@ -450,15 +459,18 @@ fn kill_worker_with_backend(
         return Ok(());
     }
 
+    let mut failed_workers = BTreeSet::new();
     if worker.adopted {
         if let Some(pane_id) = worker.pane_id.as_deref() {
             if let Err(error) = backend.pane_run(pane_id, &release_notice(&run.state.spec.name)) {
                 log_teardown_note("adopted pane", pane_id, &error);
+                failed_workers.insert(worker_name.to_owned());
             }
         }
     } else if let Some(workspace_id) = worker.workspace_id.as_deref() {
         if let Err(error) = backend.workspace_close(workspace_id) {
             log_teardown_note("workspace", workspace_id, &error);
+            failed_workers.insert(worker_name.to_owned());
         }
     }
 
@@ -481,7 +493,12 @@ fn kill_worker_with_backend(
     } else {
         WorkerLifecycle::Ended
     };
-    persist_kill_state(run_dir, Some((worker_name, terminal)), false)?;
+    persist_kill_state(
+        run_dir,
+        Some((worker_name, terminal)),
+        false,
+        &failed_workers,
+    )?;
     if dirty_paths.is_empty() {
         Ok(())
     } else {
@@ -493,15 +510,26 @@ fn persist_kill_state(
     run_dir: &Path,
     worker: Option<(&str, WorkerLifecycle)>,
     end_run: bool,
+    failed_workers: &BTreeSet<String>,
 ) -> Result<(), StatusKillError> {
     update_run_with_hook(run_dir, |fresh, _| -> Result<(), StatusKillError> {
-        if let Some((name, lifecycle)) = worker {
+        for name in failed_workers {
             fresh
                 .state
                 .workers
                 .get_mut(name)
-                .expect("kill target exists in persisted run state")
-                .lifecycle = lifecycle;
+                .expect("teardown failure target exists in persisted run state")
+                .lifecycle = WorkerLifecycle::Failed;
+        }
+        if let Some((name, lifecycle)) = worker {
+            if !failed_workers.contains(name) {
+                fresh
+                    .state
+                    .workers
+                    .get_mut(name)
+                    .expect("kill target exists in persisted run state")
+                    .lifecycle = lifecycle;
+            }
             if fresh.state.workers.values().all(|state| {
                 matches!(
                     state.lifecycle,
@@ -521,7 +549,8 @@ fn persist_kill_state(
     Ok(())
 }
 
-fn release_adopted_workers(run: &mut RunBoard, backend: &impl TeardownBackend) {
+fn release_adopted_workers(run: &mut RunBoard, backend: &impl TeardownBackend) -> BTreeSet<String> {
+    let mut failed_workers = BTreeSet::new();
     let pending = run
         .state
         .workers
@@ -542,6 +571,7 @@ fn release_adopted_workers(run: &mut RunBoard, backend: &impl TeardownBackend) {
             Some(pane_id) => {
                 if let Err(error) = backend.pane_run(&pane_id, &notice) {
                     log_teardown_note("adopted pane", &pane_id, &error);
+                    failed_workers.insert(name.clone());
                 }
             }
             None => eprintln!(
@@ -552,8 +582,13 @@ fn release_adopted_workers(run: &mut RunBoard, backend: &impl TeardownBackend) {
             .workers
             .get_mut(&name)
             .expect("release candidates come from the same run state")
-            .lifecycle = WorkerLifecycle::Released;
+            .lifecycle = if failed_workers.contains(&name) {
+            WorkerLifecycle::Failed
+        } else {
+            WorkerLifecycle::Released
+        };
     }
+    failed_workers
 }
 
 fn release_notice(team_name: &str) -> String {
@@ -855,6 +890,28 @@ mod tests {
     }
 
     #[test]
+    fn kill_persists_failed_lifecycle_when_workspace_close_fails() {
+        let temp = TempDir::new();
+        let run = create_run(temp.path(), run_state(temp.path())).expect("create run");
+        let backend = FakeTeardown {
+            unavailable_workspaces: BTreeSet::from(["workspace-builder".to_owned()]),
+            ..Default::default()
+        };
+
+        kill_run_with_backend(&run.dir, false, &backend).expect("kill run");
+
+        let persisted = load_run(&run.dir).expect("load run after failed close");
+        assert_eq!(
+            persisted.state.workers["builder"].lifecycle,
+            WorkerLifecycle::Failed
+        );
+        assert_eq!(
+            persisted.state.workers["reviewer"].lifecycle,
+            WorkerLifecycle::Ended
+        );
+    }
+
+    #[test]
     fn kill_releases_adopted_worker_once_and_closes_only_owned_workspace() {
         let temp = TempDir::new();
         let mut state = run_state(temp.path());
@@ -1000,7 +1057,7 @@ mod tests {
     }
 
     #[test]
-    fn kill_with_a_closed_adopted_pane_releases_every_worker_and_ends_the_run() {
+    fn kill_persists_failed_lifecycles_when_close_or_release_notice_fails() {
         let temp = TempDir::new();
         let mut state = run_state(temp.path());
         let adopted = state.workers.get_mut("reviewer").expect("reviewer runtime");
@@ -1016,18 +1073,18 @@ mod tests {
         };
 
         kill_run_with_backend(&run.dir, false, &backend)
-            .expect("missing adopted resources must not abort kill");
+            .expect("failed teardown operations must not abort kill");
 
         assert_eq!(backend.closed.into_inner(), ["workspace-builder"]);
         let ended = load_run(&run.dir).expect("load ended run");
         assert_eq!(ended.state.lifecycle, RunLifecycle::Ended);
         assert_eq!(
             ended.state.workers["builder"].lifecycle,
-            WorkerLifecycle::Ended
+            WorkerLifecycle::Failed
         );
         assert_eq!(
             ended.state.workers["reviewer"].lifecycle,
-            WorkerLifecycle::Released
+            WorkerLifecycle::Failed
         );
     }
 
