@@ -1,6 +1,6 @@
 [package]
 name = "herdr-agent-team"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 license = "MIT"
 description = "Herdr plugin: heterogeneous coding-agent teams under a coordinating god session"
