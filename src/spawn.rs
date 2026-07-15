@@ -9,8 +9,8 @@ use crate::spec::{
     SpecError,
 };
 use crate::types::{
-    AgentsMdMode, LauncherEntry, LauncherTable, RunLifecycle, RunState, TeamSpec, WorkerLifecycle,
-    WorkerRunState, WorkerSpec,
+    current_herdr_session_identity, AgentsMdMode, LauncherEntry, LauncherTable, RunLifecycle,
+    RunState, TeamSpec, WorkerLifecycle, WorkerRunState, WorkerSpec,
 };
 use std::collections::BTreeMap;
 use std::env;
@@ -425,6 +425,7 @@ where
                     workspace_id: None,
                     pane_id: None,
                     agent_id: None,
+                    agent_session: None,
                     worktree_path: None,
                     adopted: false,
                     lifecycle: WorkerLifecycle::Pending,
@@ -435,6 +436,7 @@ where
     let state = RunState {
         spec: spec.clone(),
         god_pane_id,
+        herdr_session: current_herdr_session_identity(),
         workers,
         lifecycle: RunLifecycle::Active,
     };
@@ -645,11 +647,13 @@ fn launch_worker<H: HerdrApi>(
     )?;
 
     let pane = wait_for_agent_info(herdr, worker, &pane_id, agent_info_timeout)?;
-    run.state
+    let state = run
+        .state
         .workers
         .get_mut(&worker.name)
-        .expect("run state is initialized from the same team spec")
-        .agent_id = pane.agent_id.clone();
+        .expect("run state is initialized from the same team spec");
+    state.agent_id = pane.agent_id.clone();
+    state.agent_session = pane.agent_session.clone();
     save_run(run)?;
 
     let prompt = launch_prompt(worker, launcher, &worker_protocol_path(run, worker));
@@ -1107,6 +1111,14 @@ mod tests {
                 }),
                 agent_id: (agent_detected && !self.omit_agent_id.get() && !delayed)
                     .then(|| format!("agent-session-{pane_id}")),
+                agent_session: (agent_detected && !self.omit_agent_id.get() && !delayed).then(
+                    || crate::herdr::AgentSession {
+                        source: "herdr:test".to_owned(),
+                        agent: "claude".to_owned(),
+                        kind: "id".to_owned(),
+                        value: format!("agent-session-{pane_id}"),
+                    },
+                ),
                 agent_status: Some("idle".to_owned()),
                 cwd: None,
             })
@@ -1543,6 +1555,14 @@ mod tests {
             "persist the opaque ID returned by the typed client"
         );
         assert_eq!(worker.lifecycle, WorkerLifecycle::Running);
+        assert_eq!(
+            worker
+                .agent_session
+                .as_ref()
+                .map(|session| session.source.as_str()),
+            Some("herdr:test"),
+            "persist the complete agent-session reference"
+        );
         let calls = fake.calls();
         assert_eq!(calls[0], "health_check");
         assert!(calls.iter().any(|call| call == "pane_run:pane-1:'claude'"));

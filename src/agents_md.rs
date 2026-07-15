@@ -195,6 +195,7 @@ mod tests {
             workspace_id: Some(workspace_id.to_owned()),
             pane_id: Some(format!("{workspace_id}-pane")),
             agent_id: None,
+            agent_session: None,
             worktree_path: worktree_path.map(PathBuf::from),
             adopted: false,
             lifecycle: WorkerLifecycle::Running,
@@ -202,6 +203,7 @@ mod tests {
         let run = RunState {
             spec: team.clone(),
             god_pane_id: "god-pane-7".to_owned(),
+            herdr_session: Default::default(),
             workers: BTreeMap::from([
                 (
                     "builder".to_owned(),

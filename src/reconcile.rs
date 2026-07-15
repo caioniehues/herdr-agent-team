@@ -294,6 +294,7 @@ mod tests {
                 }],
             },
             god_pane_id: "god".to_owned(),
+            herdr_session: Default::default(),
             lifecycle: RunLifecycle::Active,
             workers: BTreeMap::from([(
                 "builder".to_owned(),
@@ -301,6 +302,7 @@ mod tests {
                     workspace_id: Some("workspace-1".to_owned()),
                     pane_id: Some("pane-1".to_owned()),
                     agent_id: None,
+                    agent_session: None,
                     worktree_path: Some(PathBuf::from("/tmp/worktree")),
                     adopted: false,
                     lifecycle: WorkerLifecycle::Running,

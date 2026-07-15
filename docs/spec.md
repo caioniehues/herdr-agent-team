@@ -182,9 +182,11 @@ feature.
    (atomically migrate pane/tab/workspace ids from `previous_pane_id`),
    `pane.exited` vs `pane.closed` (dead vs removed), `workspace.closed`,
    `worktree.removed`, and `pane.agent_detected` (bind identity earlier).
-2. **Full `agent_session` persistence**: store `{source, agent, kind,
-   value}` per worker (today only `.value` survives), plus the exact herdr
-   session/socket identity per run. Prerequisite for any real restart.
+2. **Full `agent_session` persistence** — **SHIPPED (#5, 2026-07-15)**:
+   store `{source, agent, kind, value}` per worker (while retaining the
+   legacy `agent_id` projection for old run boards), plus the exact
+   `HERDR_SOCKET_PATH` / `HERDR_SESSION` identity per run at spawn and adopt.
+   Prerequisite for any real restart; restart logic remains out of scope.
 3. **Schema-gated metadata + aggregate notifications**: publish `team` /
    `role` / `task` / `progress` via `pane report-metadata` tokens with
    `--seq`/`--ttl-ms` — only after a runtime schema probe confirms token
@@ -268,6 +270,11 @@ reference detail lives in `docs/research/` (ADR-0010 §3), not here.
   `TERM`/`COLORTERM`) `[source 2026-07-15]` — previously undocumented here.
   Event hooks additionally get the `HERDR_PLUGIN_*` set; full matrix in the
   research report Part A §2.
+- **Run identity persistence**: named sessions are selected with
+  `HERDR_SESSION`, and `HERDR_SOCKET_PATH` is the low-level override
+  `[source 2026-07-15]`. Each new or adopted run persists both values when
+  present, alongside the complete upstream `agent_session` reference per
+  worker; older run boards without these additive fields still deserialize.
 - **Plugin surface**: 21 hookable manifest events (not just
   `pane.agent_status_changed`); actions, panes, keybinds, link handlers
   available `[source 2026-07-15]`. High-frequency kinds

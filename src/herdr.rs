@@ -49,6 +49,7 @@ pub struct PaneInfo {
     pub workspace_id: String,
     pub agent: Option<String>,
     pub agent_id: Option<String>,
+    pub agent_session: Option<AgentSession>,
     pub agent_status: Option<String>,
     pub cwd: Option<PathBuf>,
 }
@@ -59,13 +60,18 @@ pub struct AgentInfo {
     pub workspace_id: String,
     pub agent: Option<String>,
     pub agent_id: Option<String>,
+    pub agent_session: Option<AgentSession>,
     #[serde(rename = "agent_status")]
     pub status: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
-struct AgentSessionRef {
-    value: String,
+/// An opaque agent-session reference reported by Herdr.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentSession {
+    pub source: String,
+    pub agent: String,
+    pub kind: String,
+    pub value: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -73,7 +79,7 @@ struct PaneInfoWire {
     pane_id: String,
     workspace_id: String,
     agent: Option<String>,
-    agent_session: Option<AgentSessionRef>,
+    agent_session: Option<AgentSession>,
     agent_status: Option<String>,
     cwd: Option<PathBuf>,
 }
@@ -84,11 +90,16 @@ impl<'de> Deserialize<'de> for PaneInfo {
         D: serde::Deserializer<'de>,
     {
         let wire = PaneInfoWire::deserialize(deserializer)?;
+        let agent_id = wire
+            .agent_session
+            .as_ref()
+            .map(|session| session.value.clone());
         Ok(Self {
             pane_id: wire.pane_id,
             workspace_id: wire.workspace_id,
             agent: wire.agent,
-            agent_id: wire.agent_session.map(|session| session.value),
+            agent_id,
+            agent_session: wire.agent_session,
             agent_status: wire.agent_status,
             cwd: wire.cwd,
         })
@@ -100,7 +111,7 @@ struct AgentInfoWire {
     pane_id: String,
     workspace_id: String,
     agent: Option<String>,
-    agent_session: Option<AgentSessionRef>,
+    agent_session: Option<AgentSession>,
     #[serde(rename = "agent_status")]
     status: Option<String>,
 }
@@ -111,11 +122,16 @@ impl<'de> Deserialize<'de> for AgentInfo {
         D: serde::Deserializer<'de>,
     {
         let wire = AgentInfoWire::deserialize(deserializer)?;
+        let agent_id = wire
+            .agent_session
+            .as_ref()
+            .map(|session| session.value.clone());
         Ok(Self {
             pane_id: wire.pane_id,
             workspace_id: wire.workspace_id,
             agent: wire.agent,
-            agent_id: wire.agent_session.map(|session| session.value),
+            agent_id,
+            agent_session: wire.agent_session,
             status: wire.status,
         })
     }
@@ -660,6 +676,15 @@ mod tests {
             pane.agent_id.as_deref(),
             Some("019f6268-cf99-7110-8c8f-e94817e05fad")
         );
+        assert_eq!(
+            pane.agent_session,
+            Some(AgentSession {
+                source: "herdr:codex".to_owned(),
+                agent: "codex".to_owned(),
+                kind: "id".to_owned(),
+                value: "019f6268-cf99-7110-8c8f-e94817e05fad".to_owned(),
+            })
+        );
 
         let agents = parse_agent_list(LIVE_AGENT_LIST).unwrap();
         assert_eq!(agents.len(), 1);
@@ -668,6 +693,13 @@ mod tests {
         assert_eq!(
             agents[0].agent_id.as_deref(),
             Some("019f6268-cf99-7110-8c8f-e94817e05fad")
+        );
+        assert_eq!(
+            agents[0]
+                .agent_session
+                .as_ref()
+                .map(|session| session.kind.as_str()),
+            Some("id")
         );
     }
 

@@ -83,6 +83,8 @@ pub type LauncherTable = BTreeMap<String, LauncherEntry>;
 pub struct RunState {
     pub spec: TeamSpec,
     pub god_pane_id: String,
+    #[serde(default, skip_serializing_if = "HerdrSessionIdentity::is_empty")]
+    pub herdr_session: HerdrSessionIdentity,
     pub workers: BTreeMap<String, WorkerRunState>,
     pub lifecycle: RunLifecycle,
 }
@@ -97,10 +99,38 @@ pub struct WorkerRunState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_session: Option<crate::herdr::AgentSession>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree_path: Option<PathBuf>,
     #[serde(default)]
     pub adopted: bool,
     pub lifecycle: WorkerLifecycle,
+}
+
+/// The Herdr runtime selected when this run was created or adopted.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HerdrSessionIdentity {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub socket_path: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+impl HerdrSessionIdentity {
+    pub fn from_environment(socket_path: Option<PathBuf>, name: Option<String>) -> Self {
+        Self { socket_path, name }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.socket_path.is_none() && self.name.is_none()
+    }
+}
+
+pub fn current_herdr_session_identity() -> HerdrSessionIdentity {
+    HerdrSessionIdentity::from_environment(
+        std::env::var_os("HERDR_SOCKET_PATH").map(PathBuf::from),
+        std::env::var("HERDR_SESSION").ok(),
+    )
 }
 
 /// Whether a durable team run is still active (spec sections 4 and 6).
