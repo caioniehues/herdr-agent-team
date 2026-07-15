@@ -274,9 +274,12 @@ feature.
    unsupported. Mutating `HerdrApi` calls always delegate to the CLI backend.
    Frames are capped at 1 MiB; reconnects have a fixed cap, backoff, and overall
    deadline; response IDs and typed result/event shapes are validated. Board and
-   aggregate wait bootstrap with `session.snapshot`, then use one multiplexed
-   `events.subscribe` connection for the durable run's worker pane IDs;
-   reconnect re-snapshots. Completion truth remains `run.toml` and inbox state.
+   aggregate wait bootstrap with `session.snapshot`, then retain one multiplexed
+   `events.subscribe` connection for the durable run's worker pane IDs across
+   refresh cycles. Ordinary read timeouts preserve that stream; transport loss
+   drops it, re-snapshots, and reconnects. An immediate subscription failure
+   spends only the remaining wait budget in bounded CLI polling. Completion
+   truth remains `run.toml` and inbox state.
    Set `HERDR_TEAM_SOCKET_TRACE=<path>` for redacted JSONL diagnostics (request
    ID, method, result type, latency, and a fixed error category only; server
    text is never written).

@@ -19,6 +19,7 @@ pub mod paths;
 pub mod reconcile;
 pub mod run;
 pub mod socket;
+pub mod socket_backend;
 pub mod spawn;
 pub mod spec;
 pub mod status_kill;

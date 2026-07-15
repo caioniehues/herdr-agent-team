@@ -207,7 +207,9 @@ pub fn board_command(args: &[String]) -> Result<(), BoardError> {
     let run_dir = select_run(args)?;
     let fallback = RunCollector { run_dir };
     if let Some(socket) = crate::socket::SocketClient::try_from_env() {
-        run_board(crate::socket::SocketBoardCollector { socket, fallback })
+        run_board(crate::socket_backend::SocketBoardCollector::new(
+            socket, fallback,
+        ))
     } else {
         run_board(fallback)
     }

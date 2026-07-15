@@ -10,6 +10,13 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum HerdrError {
+    #[error("public socket {operation} failed: {source}")]
+    Transport {
+        operation: String,
+        #[source]
+        source: std::io::Error,
+    },
+
     #[error("failed to spawn `{argv}`: {source}")]
     Spawn {
         argv: String,

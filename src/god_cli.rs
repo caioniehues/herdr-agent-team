@@ -196,7 +196,9 @@ pub fn wait_command(args: &[String]) -> Result<WaitVerdict, GodCliError> {
     let run_dir = select_wait_run(run_dir.as_deref())?;
     let fallback = RunGodCollector { run_dir };
     let collector: Box<dyn GodCollector> = match crate::socket::SocketClient::try_from_env() {
-        Some(socket) => Box::new(crate::socket::SocketGodCollector { socket, fallback }),
+        Some(socket) => Box::new(crate::socket_backend::SocketGodCollector::new(
+            socket, fallback,
+        )),
         None => Box::new(fallback),
     };
     validate_until(&collector.collect()?, &until)?;

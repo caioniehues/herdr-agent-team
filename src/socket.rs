@@ -3,12 +3,7 @@
 //! Mutations deliberately delegate to the CLI. The socket is reserved for
 //! snapshots and multiplexed event subscriptions.
 
-use crate::board::{BoardCollector, BoardError, BoardSnapshot};
-use crate::god_cli::{GodCliError, GodCollector, GodSnapshot};
-use crate::herdr::{
-    AgentInfo, HerdrApi, HerdrClient, HerdrError, PaneInfo, WaitOutcome, WorkspaceRef, WorktreeRef,
-};
-use crate::metadata::MetadataUpdate;
+use crate::herdr::{HerdrApi, HerdrClient, HerdrError};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::fs::OpenOptions;
@@ -146,21 +141,6 @@ impl SocketClient<HerdrClient> {
         let path = std::env::var_os("HERDR_SOCKET_PATH").map(PathBuf::from)?;
         Self::connect(path, HerdrClient::from_env()).ok()
     }
-    /// Opt in with `HERDR_TEAM_BACKEND=socket`; any handshake failure returns
-    /// the ordinary CLI client, preserving the pre-ADR behavior.
-    pub fn from_env_or_cli() -> Backend {
-        let cli = HerdrClient::from_env();
-        if std::env::var(BACKEND_ENV).as_deref() != Ok("socket") {
-            return Backend::Cli(cli);
-        }
-        let Some(path) = std::env::var_os("HERDR_SOCKET_PATH").map(PathBuf::from) else {
-            return Backend::Cli(cli);
-        };
-        match Self::connect(path, cli.clone()) {
-            Ok(socket) => Backend::Socket(socket),
-            Err(_) => Backend::Cli(cli),
-        }
-    }
 }
 
 impl<C: HerdrApi> SocketClient<C> {
@@ -265,6 +245,22 @@ impl<C: HerdrApi> SocketClient<C> {
     ) -> Result<bool, HerdrError> {
         self.read_one_event(subscriptions, timeout)
             .map(|event| event.is_some())
+    }
+
+    pub(crate) fn subscribe(
+        &self,
+        subscriptions: &[Value],
+        timeout: Duration,
+    ) -> Result<SubscriptionStream, HerdrError> {
+        self.open_subscription(subscriptions, timeout)
+            .map(|reader| SubscriptionStream {
+                reader,
+                max_frame_bytes: self.max_frame_bytes,
+            })
+    }
+
+    pub(crate) fn fallback(&self) -> &C {
+        &self.fallback
     }
 
     fn read_one_event(
@@ -376,150 +372,50 @@ impl<C: HerdrApi> SocketClient<C> {
     }
 }
 
+pub(crate) struct SubscriptionStream {
+    reader: BufReader<UnixStream>,
+    max_frame_bytes: usize,
+}
+
+pub(crate) enum SubscriptionPoll {
+    Event(SubscriptionEvent),
+    Timeout,
+    Closed,
+}
+
+impl SubscriptionStream {
+    pub(crate) fn poll(&mut self, timeout: Duration) -> Result<SubscriptionPoll, HerdrError> {
+        self.reader
+            .get_ref()
+            .set_read_timeout(Some(timeout))
+            .map_err(|source| transport("set subscription timeout", source))?;
+        match read_value_optional(&mut self.reader, self.max_frame_bytes, "events.subscribe") {
+            Ok(Some(value)) => serde_json::from_value(value)
+                .map(SubscriptionPoll::Event)
+                .map_err(|e| invalid("events.subscribe event", e)),
+            Ok(None) => Ok(SubscriptionPoll::Closed),
+            Err(HerdrError::Transport { source, .. })
+                if matches!(
+                    source.kind(),
+                    std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                ) =>
+            {
+                Ok(SubscriptionPoll::Timeout)
+            }
+            Err(error) => Err(error),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum StreamItem {
     Snapshot(SessionSnapshot),
     Event(SubscriptionEvent),
 }
 
-pub enum Backend {
-    Cli(HerdrClient),
-    Socket(SocketClient),
-}
-
-/// Socket-aware collector adapters preserve durable run/inbox truth. A socket
-/// snapshot is used as the fast freshness probe; clean fallback retains the
-/// exact existing collector verdict when the socket disappears.
-pub struct SocketGodCollector<C, G> {
-    pub socket: SocketClient<C>,
-    pub fallback: G,
-}
-impl<C: HerdrApi, G: GodCollector> GodCollector for SocketGodCollector<C, G> {
-    fn collect(&self) -> Result<GodSnapshot, GodCliError> {
-        let _ = self.socket.snapshot();
-        self.fallback.collect()
-    }
-    fn wait_for_change(&self, timeout: Duration) {
-        let subscriptions = self
-            .fallback
-            .subscription_panes()
-            .into_iter()
-            .map(|pane_id| json!({"type":"pane.agent_status_changed","pane_id":pane_id}))
-            .collect::<Vec<_>>();
-        if subscriptions.is_empty() {
-            self.fallback.wait_for_change(timeout);
-        } else {
-            let _ = self.socket.wait_for_change(&subscriptions, timeout);
-        }
-    }
-    fn subscription_panes(&self) -> Vec<String> {
-        self.fallback.subscription_panes()
-    }
-}
-pub struct SocketBoardCollector<C, B> {
-    pub socket: SocketClient<C>,
-    pub fallback: B,
-}
-impl<C: HerdrApi, B: BoardCollector> BoardCollector for SocketBoardCollector<C, B> {
-    fn collect(&self) -> Result<BoardSnapshot, BoardError> {
-        let _ = self.socket.snapshot();
-        self.fallback.collect()
-    }
-    fn wait_for_change(&self, timeout: Duration) -> bool {
-        let subscriptions = self
-            .fallback
-            .subscription_panes()
-            .into_iter()
-            .map(|pane_id| json!({"type":"pane.agent_status_changed","pane_id":pane_id}))
-            .collect::<Vec<_>>();
-        self.socket
-            .wait_for_change(&subscriptions, timeout)
-            .unwrap_or(true)
-    }
-    fn subscription_panes(&self) -> Vec<String> {
-        self.fallback.subscription_panes()
-    }
-}
-
-macro_rules! delegate {
-    ($self:ident.$method:ident($($arg:expr),*)) => { match $self { Backend::Cli(c) => c.$method($($arg),*), Backend::Socket(c) => c.$method($($arg),*) } };
-}
-
-impl HerdrApi for Backend {
-    fn workspace_create(&self, c: &Path, l: &str) -> Result<WorkspaceRef, HerdrError> {
-        delegate!(self.workspace_create(c, l))
-    }
-    fn workspace_close(&self, w: &str) -> Result<(), HerdrError> {
-        delegate!(self.workspace_close(w))
-    }
-    fn worktree_create(&self, r: &Path, b: &str) -> Result<WorktreeRef, HerdrError> {
-        delegate!(self.worktree_create(r, b))
-    }
-    fn worktree_remove(&self, p: &Path) -> Result<(), HerdrError> {
-        delegate!(self.worktree_remove(p))
-    }
-    fn pane_run(&self, p: &str, i: &str) -> Result<(), HerdrError> {
-        delegate!(self.pane_run(p, i))
-    }
-    fn pane_get(&self, p: &str) -> Result<PaneInfo, HerdrError> {
-        delegate!(self.pane_get(p))
-    }
-    fn agent_list(&self) -> Result<Vec<AgentInfo>, HerdrError> {
-        delegate!(self.agent_list())
-    }
-    fn agent_wait(&self, p: &str, s: &str, t: Duration) -> Result<WaitOutcome, HerdrError> {
-        delegate!(self.agent_wait(p, s, t))
-    }
-}
-
-impl<C: HerdrApi> HerdrApi for SocketClient<C> {
-    fn workspace_create(&self, c: &Path, l: &str) -> Result<WorkspaceRef, HerdrError> {
-        self.fallback.workspace_create(c, l)
-    }
-    fn workspace_close(&self, w: &str) -> Result<(), HerdrError> {
-        self.fallback.workspace_close(w)
-    }
-    fn worktree_create(&self, r: &Path, b: &str) -> Result<WorktreeRef, HerdrError> {
-        self.fallback.worktree_create(r, b)
-    }
-    fn worktree_remove(&self, p: &Path) -> Result<(), HerdrError> {
-        self.fallback.worktree_remove(p)
-    }
-    fn pane_split(&self, w: &str, c: &Path) -> Result<PaneInfo, HerdrError> {
-        self.fallback.pane_split(w, c)
-    }
-    fn pane_run(&self, p: &str, i: &str) -> Result<(), HerdrError> {
-        self.fallback.pane_run(p, i)
-    }
-    fn pane_read(&self, p: &str) -> Result<String, HerdrError> {
-        self.fallback.pane_read(p)
-    }
-    fn pane_rename(&self, p: &str, t: &str) -> Result<(), HerdrError> {
-        self.fallback.pane_rename(p, t)
-    }
-    fn agent_wait(&self, p: &str, s: &str, t: Duration) -> Result<WaitOutcome, HerdrError> {
-        self.fallback.agent_wait(p, s, t)
-    }
-    fn agent_list(&self) -> Result<Vec<AgentInfo>, HerdrError> {
-        self.fallback.agent_list()
-    }
-    fn pane_get(&self, p: &str) -> Result<PaneInfo, HerdrError> {
-        self.fallback.pane_get(p)
-    }
-    fn api_schema(&self) -> Result<String, HerdrError> {
-        self.fallback.api_schema()
-    }
-    fn pane_report_metadata(&self, p: &str, u: &MetadataUpdate) -> Result<(), HerdrError> {
-        self.fallback.pane_report_metadata(p, u)
-    }
-    fn notification_show(&self, t: &str, b: &str, s: &str) -> Result<(), HerdrError> {
-        self.fallback.notification_show(t, b, s)
-    }
-}
-
 #[cfg(unix)]
 fn connect(path: &Path) -> Result<UnixStream, HerdrError> {
-    UnixStream::connect(path).map_err(|e| invalid_msg("socket connect", &e.to_string()))
+    UnixStream::connect(path).map_err(|source| transport("connect", source))
 }
 #[cfg(not(unix))]
 fn connect(_: &Path) -> Result<std::fs::File, HerdrError> {
@@ -530,8 +426,10 @@ fn connect(_: &Path) -> Result<std::fs::File, HerdrError> {
 }
 fn write_request<W: Write>(w: &mut W, r: &Request<'_>) -> Result<(), HerdrError> {
     serde_json::to_writer(&mut *w, r).map_err(|e| invalid("request", e))?;
-    w.write_all(b"\n").map_err(|e| invalid("request", e))?;
-    w.flush().map_err(|e| invalid("request", e))
+    w.write_all(b"\n")
+        .map_err(|source| transport("write request", source))?;
+    w.flush()
+        .map_err(|source| transport("flush request", source))
 }
 fn read_envelope<R: BufRead>(r: &mut R, max: usize, m: &str) -> Result<Envelope, HerdrError> {
     let v = read_value_optional(r, max, m)?.ok_or_else(|| invalid_msg(m, "empty response"))?;
@@ -546,7 +444,7 @@ fn read_value_optional<R: BufRead>(
     let mut limited = std::io::Read::take(std::io::Read::by_ref(r), (max + 1) as u64);
     let n = limited
         .read_until(b'\n', &mut bytes)
-        .map_err(|e| invalid(m, e))?;
+        .map_err(|source| transport(&format!("read {m}"), source))?;
     if n == 0 {
         return Ok(None);
     }
@@ -587,6 +485,12 @@ fn invalid_msg(m: &str, s: &str) -> HerdrError {
     HerdrError::InvalidResponse {
         argv: format!("public socket {m}"),
         message: s.into(),
+    }
+}
+fn transport(operation: &str, source: std::io::Error) -> HerdrError {
+    HerdrError::Transport {
+        operation: operation.to_owned(),
+        source,
     }
 }
 fn validate_runtime_schema(runtime: &str) -> Result<(), HerdrError> {
@@ -632,9 +536,10 @@ fn write_trace(path: &Path, row: &Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::board::{BoardSnapshot, BoardWorker};
-    use crate::god_cli::{GodSnapshot, InboxRow};
+    use crate::board::{BoardCollector, BoardError, BoardSnapshot, BoardWorker};
+    use crate::god_cli::{GodCliError, GodCollector, GodSnapshot, InboxRow};
     use crate::herdr::test_support::FakeHerdr;
+    use crate::socket_backend::{SocketBoardCollector, SocketGodCollector};
     use crate::types::{RunLifecycle, WorkerLifecycle};
     use std::fs;
     use std::os::unix::net::UnixListener;
@@ -693,6 +598,51 @@ mod tests {
                     .push(serde_json::from_str(&line).unwrap());
                 stream.write_all(response.as_bytes()).unwrap();
             }
+        });
+        (path, h, requests)
+    }
+    fn persistent_board_fake() -> (
+        PathBuf,
+        thread::JoinHandle<()>,
+        std::sync::Arc<std::sync::Mutex<Vec<Value>>>,
+    ) {
+        let path = std::env::temp_dir().join(format!(
+            "hat-persistent-{}-{}.sock",
+            std::process::id(),
+            rand_id()
+        ));
+        let _ = fs::remove_file(&path);
+        let listener = UnixListener::bind(&path).unwrap();
+        let requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured = requests.clone();
+        let h = thread::spawn(move || {
+            for response in [
+                pong("herdr-agent-team:0", 16),
+                snapshot("herdr-agent-team:1"),
+            ] {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut line = String::new();
+                BufReader::new(stream.try_clone().unwrap())
+                    .read_line(&mut line)
+                    .unwrap();
+                captured
+                    .lock()
+                    .unwrap()
+                    .push(serde_json::from_str(&line).unwrap());
+                stream.write_all(response.as_bytes()).unwrap();
+            }
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut line = String::new();
+            BufReader::new(stream.try_clone().unwrap())
+                .read_line(&mut line)
+                .unwrap();
+            captured
+                .lock()
+                .unwrap()
+                .push(serde_json::from_str(&line).unwrap());
+            stream.write_all(b"{\"id\":\"herdr-agent-team:2\",\"result\":{\"type\":\"subscription_started\"}}\n").unwrap();
+            thread::sleep(Duration::from_millis(30));
+            let _ = stream.write_all(b"{\"event\":\"pane.agent_status_changed\",\"data\":{\"pane_id\":\"p1\",\"workspace_id\":\"w1\",\"agent_status\":\"blocked\"}}\n");
         });
         (path, h, requests)
     }
@@ -886,10 +836,7 @@ mod tests {
         ]);
         let socket = SocketClient::connect_validated(path.clone(), FakeHerdr::default()).unwrap();
         let cli = FixtureGod(expected.clone());
-        let over_socket = SocketGodCollector {
-            socket,
-            fallback: cli.clone(),
-        };
+        let over_socket = SocketGodCollector::new(socket, cli.clone());
         assert_eq!(cli.collect().unwrap(), over_socket.collect().unwrap());
         h.join().unwrap();
         let _ = fs::remove_file(path);
@@ -1010,10 +957,7 @@ mod tests {
             }],
             mailbox_events: 0,
         };
-        let collector = SocketBoardCollector {
-            socket,
-            fallback: FixtureBoard(durable.clone()),
-        };
+        let collector = SocketBoardCollector::new(socket, FixtureBoard(durable.clone()));
         assert_eq!(collector.collect().unwrap(), durable);
         assert!(collector.wait_for_change(Duration::from_millis(50)));
         h.join().unwrap();
@@ -1032,5 +976,97 @@ mod tests {
             "p1"
         );
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn board_preserves_one_subscription_across_refresh_polls() {
+        let (path, h, requests) = persistent_board_fake();
+        let socket = SocketClient::connect_validated(path.clone(), FakeHerdr::default()).unwrap();
+        let durable = BoardSnapshot {
+            team: "wave8".into(),
+            run_dir: "/run".into(),
+            lifecycle: "active".into(),
+            workers: vec![BoardWorker {
+                name: "m".into(),
+                lifecycle: WorkerLifecycle::Running,
+                pane_id: Some("p1".into()),
+                task: None,
+                report: None,
+            }],
+            mailbox_events: 0,
+        };
+        let collector = SocketBoardCollector::new(socket, FixtureBoard(durable));
+        collector.collect().unwrap();
+        assert!(!collector.wait_for_change(Duration::from_millis(5)));
+        assert!(collector.wait_for_change(Duration::from_millis(80)));
+        h.join().unwrap();
+        let methods = requests
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|request| request["method"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            methods,
+            vec!["ping", "session.snapshot", "events.subscribe"]
+        );
+        let _ = fs::remove_file(path);
+    }
+
+    #[derive(Clone)]
+    struct CountingGod {
+        waits: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+    impl GodCollector for CountingGod {
+        fn collect(&self) -> Result<GodSnapshot, GodCliError> {
+            Ok(FixtureGod(GodSnapshot {
+                run_dir: "/run".into(),
+                lifecycle: RunLifecycle::Active,
+                rows: vec![],
+                worker_lifecycles: vec![],
+                statuses: vec![],
+            })
+            .0)
+        }
+        fn wait_for_change(&self, timeout: Duration) {
+            self.waits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            thread::sleep(timeout)
+        }
+        fn subscription_panes(&self) -> Vec<String> {
+            vec!["p1".into()]
+        }
+    }
+
+    #[test]
+    fn immediate_subscription_error_uses_one_bounded_cli_fallback_sleep() {
+        let error="{\"id\":\"herdr-agent-team:1\",\"error\":{\"code\":\"unsupported\",\"message\":\"no subscription\"}}\n";
+        let (path, h) = fake(vec![pong("herdr-agent-team:0", 16), error.into()]);
+        let socket = SocketClient::connect_validated(path.clone(), FakeHerdr::default()).unwrap();
+        let waits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let collector = SocketGodCollector::new(
+            socket,
+            CountingGod {
+                waits: waits.clone(),
+            },
+        );
+        let started = Instant::now();
+        collector.wait_for_change(Duration::from_millis(20));
+        assert_eq!(waits.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(started.elapsed() >= Duration::from_millis(20));
+        assert!(started.elapsed() < Duration::from_millis(50));
+        h.join().unwrap();
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn transport_module_has_no_collector_adapter_dependencies() {
+        let source = include_str!("socket.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .unwrap();
+        assert!(!source.contains(&["crate", "::board"].concat()));
+        assert!(!source.contains(&["crate", "::god_cli"].concat()));
+        assert!(!source.contains(&["impl Board", "Collector"].concat()));
+        assert!(!source.contains(&["impl God", "Collector"].concat()));
     }
 }
