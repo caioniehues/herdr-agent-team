@@ -224,10 +224,21 @@ feature.
    status belongs to the sidebar via step-3 metadata — never a generic
    agent list. Dependencies remain deferred. Collection is CLI polling behind
    a small collector seam; #8 replaces it with socket snapshots/subscription.
-5. **Direct socket backend behind `HerdrApi`** (ADR-0011): snapshot +
-   subscription for the board and aggregate `team wait
-   [--until all|any|blocked|report]`; CLI stays default/fallback.
-6. **Run-scoped broadcast + bounded previews + conservative restart**:
+5. **Herdr seam unification (#22)**: one `HerdrApi` trait in herdr.rs, one
+   shared FakeHerdr, hook.rs trait-injected; launcher loading deduped.
+   Behavior-neutral enabler for the socket backend and the god toolkit.
+6. **God toolkit (#23, #24, #25)** — reshaped 2026-07-15 (god-lens review):
+   `team wait --until any-report|report:<w>|all-reports|blocked|attention|
+   all-terminal` over run state + inbox (report existence = completion truth;
+   never pane attention states; CLI-polling v1 behind a collector trait);
+   `inbox`/`report` verbs with read-marks and stopped-not-done triage;
+   zero-ceremony invocation (self-resolved plugin dirs); `msg all`;
+   god-side skill `skills/god/` shipping the coordination playbook.
+7. **Direct socket backend behind `HerdrApi`** (ADR-0011): `SocketClient`
+   adapter; board + `team wait` collectors swap to snapshot/subscribe with
+   no interface change; CLI stays default/fallback.
+8. **Bounded previews + conservative restart** (broadcast moved to the god
+   toolkit):
    `team msg --all` loops run members with per-target results; board
    previews via bounded `recent-unwrapped` reads; `team restart` only for
    launchers with a deliberately implemented, tested `resume_command`
