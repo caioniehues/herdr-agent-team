@@ -39,6 +39,12 @@ Last updated 2026-07-15 (post research wave + docs overhaul).
 
 ## NEXT steps (in order)
 
+0. **Waves 5+6 ready to start** — coordinator kickoff prompt at
+   `.scratch/wave5-kickoff.md` (fresh-session ready). Wave 5: #22 seam
+   unification, then #14+#17 spawn robustness. Wave 6: #23 team wait +
+   #24 god CLI ergonomics + #25 god-side skill. Roadmap reshaped in spec §8
+   (god-lens review 2026-07-15); #8 = socket adapter only, #9 = restart +
+   previews.
 0. **v0.6.0 RELEASED 2026-07-15** (#7): native board pane = the human's
    CONTROL DECK (variant-D prototype verdict; branch prototype/board-pane is
    the primary source). `[[panes]] board` + open-board action + report: link
