@@ -1,8 +1,8 @@
 //! Team preflight and worker launch flow from `docs/spec.md` section 4.
 
 use crate::agents_md::{render_agents_md, AgentsMdError};
-use crate::herdr::{HerdrClient, HerdrError, PaneInfo, WaitOutcome, WorkspaceRef, WorktreeRef};
-use crate::launcher::{default_launcher_table, launcher_entry, load_launcher_table, LauncherError};
+use crate::herdr::{HerdrApi, HerdrClient, HerdrError, PaneInfo, WaitOutcome};
+use crate::launcher::{launcher_entry, load_from_env, LauncherError};
 use crate::run::{create_run, save_run, RunBoard, RunError};
 use crate::spec::{
     load_team_spec, spawn_command as dry_run_command, team_spec_from_agents, validate_team_spec,
@@ -119,51 +119,6 @@ struct SpawnContext {
     launchers: LauncherTable,
     state_dir: PathBuf,
     god_pane_id: String,
-}
-
-pub(crate) trait HerdrApi {
-    fn health_check(&self) -> Result<(), HerdrError>;
-    fn worktree_create(&self, repo: &Path, branch: &str) -> Result<WorktreeRef, HerdrError>;
-    fn workspace_create(&self, cwd: &Path, label: &str) -> Result<WorkspaceRef, HerdrError>;
-    fn pane_run(&self, pane_id: &str, input: &str) -> Result<(), HerdrError>;
-    fn agent_wait(
-        &self,
-        pane_id: &str,
-        status: &str,
-        timeout: Duration,
-    ) -> Result<WaitOutcome, HerdrError>;
-    fn pane_get(&self, pane_id: &str) -> Result<PaneInfo, HerdrError>;
-}
-
-impl HerdrApi for HerdrClient {
-    fn health_check(&self) -> Result<(), HerdrError> {
-        self.agent_list().map(|_| ())
-    }
-
-    fn worktree_create(&self, repo: &Path, branch: &str) -> Result<WorktreeRef, HerdrError> {
-        HerdrClient::worktree_create(self, repo, branch)
-    }
-
-    fn workspace_create(&self, cwd: &Path, label: &str) -> Result<WorkspaceRef, HerdrError> {
-        self.workspace_create(cwd, label)
-    }
-
-    fn pane_run(&self, pane_id: &str, input: &str) -> Result<(), HerdrError> {
-        HerdrClient::pane_run(self, pane_id, input)
-    }
-
-    fn agent_wait(
-        &self,
-        pane_id: &str,
-        status: &str,
-        timeout: Duration,
-    ) -> Result<WaitOutcome, HerdrError> {
-        HerdrClient::agent_wait(self, pane_id, status, timeout)
-    }
-
-    fn pane_get(&self, pane_id: &str) -> Result<PaneInfo, HerdrError> {
-        self.pane_get(pane_id)
-    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -285,10 +240,7 @@ fn load_context(
         ));
     }
 
-    let launchers = match env::var_os("HERDR_PLUGIN_CONFIG_DIR") {
-        Some(path) => load_launcher_table(&absolutize(Path::new(&path), current_dir))?,
-        None => default_launcher_table(),
-    };
+    let launchers = load_from_env()?;
 
     let (mut spec, spec_base) = match agents {
         Some(agents) => (
@@ -943,6 +895,8 @@ fn is_executable(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::herdr::{WorkspaceRef, WorktreeRef};
+    use crate::launcher::default_launcher_table;
     use crate::run::load_run;
     use crate::types::{GodSpec, Topology};
     use std::cell::{Cell, RefCell};

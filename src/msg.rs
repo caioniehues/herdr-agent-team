@@ -1,9 +1,8 @@
 //! Name-addressed worker messaging and deferred delivery from `docs/spec.md` section 11.
 
-use crate::herdr::{HerdrClient, HerdrError, PaneInfo, WaitOutcome};
+use crate::herdr::{HerdrApi, HerdrClient, HerdrError, WaitOutcome};
 use crate::launcher::{
-    conservative_adopted_launcher, default_launcher_table, launcher_entry, load_launcher_table,
-    LauncherError,
+    conservative_adopted_launcher, launcher_entry, load_from_env, LauncherError,
 };
 use crate::run::{
     list_active_runs, load_hook_metadata, load_run, save_run_with_hook, RunBoard, RunError,
@@ -112,41 +111,6 @@ enum MessageOutcome {
     Enqueued(PathBuf),
 }
 
-trait HerdrApi {
-    fn pane_get(&self, pane_id: &str) -> Result<PaneInfo, HerdrError>;
-    fn pane_run(&self, pane_id: &str, input: &str) -> Result<(), HerdrError>;
-    fn agent_wait(
-        &self,
-        pane_id: &str,
-        status: &str,
-        timeout: Duration,
-    ) -> Result<WaitOutcome, HerdrError>;
-    fn notification_show(&self, title: &str, body: &str, sound: &str) -> Result<(), HerdrError>;
-}
-
-impl HerdrApi for HerdrClient {
-    fn pane_get(&self, pane_id: &str) -> Result<PaneInfo, HerdrError> {
-        HerdrClient::pane_get(self, pane_id)
-    }
-
-    fn notification_show(&self, title: &str, body: &str, sound: &str) -> Result<(), HerdrError> {
-        HerdrClient::notification_show(self, title, body, sound)
-    }
-
-    fn pane_run(&self, pane_id: &str, input: &str) -> Result<(), HerdrError> {
-        HerdrClient::pane_run(self, pane_id, input)
-    }
-
-    fn agent_wait(
-        &self,
-        pane_id: &str,
-        status: &str,
-        timeout: Duration,
-    ) -> Result<WaitOutcome, HerdrError> {
-        HerdrClient::agent_wait(self, pane_id, status, timeout)
-    }
-}
-
 pub fn msg_command(args: &[String]) -> Result<(), MsgError> {
     let arguments = parse_msg_arguments(args)?;
     if arguments.attention && arguments.target != "god" {
@@ -162,11 +126,11 @@ pub fn msg_command(args: &[String]) -> Result<(), MsgError> {
     Ok(())
 }
 
-pub(crate) fn deliver_queued_message(
+pub(crate) fn deliver_queued_message<H: HerdrApi>(
     run: &RunBoard,
     target_name: &str,
     text: &str,
-    herdr: &HerdrClient,
+    herdr: &H,
 ) -> Result<(), MsgError> {
     let target = resolve_target(run, target_name)?;
     let agent = target
@@ -300,10 +264,7 @@ fn newest_active_run(state_dir: &Path) -> Result<RunBoard, MsgError> {
 }
 
 fn load_launchers() -> Result<LauncherTable, MsgError> {
-    match env::var_os("HERDR_PLUGIN_CONFIG_DIR") {
-        Some(config_dir) => Ok(load_launcher_table(Path::new(&config_dir))?),
-        None => Ok(default_launcher_table()),
-    }
+    Ok(load_from_env()?)
 }
 
 fn send_message<H: HerdrApi>(
@@ -568,6 +529,7 @@ fn consume_control_string(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::herdr::PaneInfo;
     use crate::launcher::default_launcher_table;
     use crate::types::{
         GodSpec, RunState, TeamSpec, Topology, WorkerLifecycle, WorkerRunState, WorkerSpec,

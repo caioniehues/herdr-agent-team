@@ -1,6 +1,6 @@
 //! Push-based worker status report and outbox hook from `docs/spec.md` sections 5 and 11.
 
-use crate::herdr::HerdrClient;
+use crate::herdr::{HerdrApi, HerdrClient};
 use crate::metadata::{map_facts, MetadataCapabilities, MetadataFacts};
 use crate::msg;
 use crate::reconcile::{reconcile_at, IncomingEvent, ReconciliationAction};
@@ -55,10 +55,10 @@ pub fn hook_command() -> Result<(), HookError> {
     on_agent_status(&event_json, &state_dir, &HerdrClient::from_env())
 }
 
-pub fn on_agent_status(
+pub fn on_agent_status<H: HerdrApi>(
     event_json: &str,
     state_dir: &Path,
-    herdr: &HerdrClient,
+    herdr: &H,
 ) -> Result<(), HookError> {
     let raw_event: Value = serde_json::from_str(event_json)?;
     let event = parse_event(serde_json::from_value(raw_event.clone())?)?;
@@ -234,11 +234,11 @@ fn required_string(data: &Value, field: &'static str, event: &str) -> Result<Str
         })
 }
 
-fn inject_pointer(
+fn inject_pointer<H: HerdrApi>(
     run: &run::RunBoard,
     worker_name: &str,
     status: &str,
-    herdr: &HerdrClient,
+    herdr: &H,
 ) -> Result<(), HookError> {
     let report_path = absolute_path(&run.dir.join("inbox").join(format!("{worker_name}.md")))?;
     let pointer = format!(

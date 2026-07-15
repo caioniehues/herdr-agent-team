@@ -1,13 +1,11 @@
 //! Existing-pane adoption from `docs/spec.md` section 12 and ADR-0009.
 
-use crate::herdr::{HerdrClient, HerdrError, PaneInfo};
-use crate::launcher::{
-    conservative_adopted_launcher, default_launcher_table, load_launcher_table, LauncherError,
-};
+use crate::herdr::{HerdrApi, HerdrClient, HerdrError, PaneInfo};
+use crate::launcher::{conservative_adopted_launcher, load_from_env, LauncherError};
 use crate::run::{create_run, list_active_runs, load_run, save_run, RunBoard, RunError};
 use crate::spawn::{
     adoption_prompt, is_safe_worker_filename, submit_worker_prompt, worker_protocol_path,
-    write_worker_protocol, HerdrApi, SpawnError,
+    write_worker_protocol, SpawnError,
 };
 use crate::types::{
     current_herdr_session_identity, GodSpec, LauncherEntry, LauncherTable, RunLifecycle, RunState,
@@ -137,10 +135,7 @@ pub fn adopt_command(args: &[String]) -> Result<(), AdoptError> {
         RunTarget::Bootstrap => env::var("HERDR_PANE_ID")
             .map_err(|_| AdoptError::MissingEnvironment("HERDR_PANE_ID"))?,
     };
-    let launchers = match env::var_os("HERDR_PLUGIN_CONFIG_DIR") {
-        Some(path) => load_launcher_table(&absolutize(Path::new(&path), &current_dir))?,
-        None => default_launcher_table(),
-    };
+    let launchers = load_from_env()?;
     let herdr = HerdrClient::from_env();
     let outcome = adopt_resolved(
         arguments,
@@ -503,6 +498,7 @@ fn absolutize(path: &Path, base: &Path) -> PathBuf {
 mod tests {
     use super::*;
     use crate::herdr::{WaitOutcome, WorkspaceRef, WorktreeRef};
+    use crate::launcher::default_launcher_table;
     use crate::types::AgentsMdMode;
     use std::cell::RefCell;
     use std::sync::atomic::{AtomicU64, Ordering};

@@ -144,6 +144,68 @@ pub enum WaitOutcome {
     TimedOut,
 }
 
+/// Operations used by the plugin's command and hook seams.
+///
+/// This is deliberately the single abstraction over Herdr so command paths can
+/// be tested without invoking the CLI and future backends can implement the
+/// same contract.
+pub trait HerdrApi {
+    fn workspace_create(&self, _: &Path, _: &str) -> Result<WorkspaceRef, HerdrError> {
+        Err(unsupported_api())
+    }
+    fn workspace_close(&self, _: &str) -> Result<(), HerdrError> {
+        Err(unsupported_api())
+    }
+    fn worktree_create(&self, _: &Path, _: &str) -> Result<WorktreeRef, HerdrError> {
+        Err(unsupported_api())
+    }
+    fn worktree_remove(&self, _: &Path) -> Result<(), HerdrError> {
+        Err(unsupported_api())
+    }
+    fn pane_split(&self, _: &str, _: &Path) -> Result<PaneInfo, HerdrError> {
+        Err(unsupported_api())
+    }
+    fn pane_run(&self, _: &str, _: &str) -> Result<(), HerdrError> {
+        Err(unsupported_api())
+    }
+    fn pane_read(&self, _: &str) -> Result<String, HerdrError> {
+        Err(unsupported_api())
+    }
+    fn pane_rename(&self, _: &str, _: &str) -> Result<(), HerdrError> {
+        Err(unsupported_api())
+    }
+    fn agent_wait(&self, _: &str, _: &str, _: Duration) -> Result<WaitOutcome, HerdrError> {
+        Err(unsupported_api())
+    }
+    fn agent_list(&self) -> Result<Vec<AgentInfo>, HerdrError> {
+        Err(unsupported_api())
+    }
+    fn pane_get(&self, _: &str) -> Result<PaneInfo, HerdrError> {
+        Err(unsupported_api())
+    }
+    fn api_schema(&self) -> Result<String, HerdrError> {
+        Err(unsupported_api())
+    }
+    fn pane_report_metadata(&self, _: &str, _: &MetadataUpdate) -> Result<(), HerdrError> {
+        Err(unsupported_api())
+    }
+    fn notification_show(&self, _: &str, _: &str, _: &str) -> Result<(), HerdrError> {
+        Err(unsupported_api())
+    }
+
+    fn health_check(&self) -> Result<(), HerdrError> {
+        self.agent_list().map(|_| ())
+    }
+}
+
+fn unsupported_api() -> HerdrError {
+    HerdrError::Command {
+        argv: "unsupported HerdrApi operation".to_owned(),
+        status: None,
+        stderr: "operation not implemented by this backend".to_owned(),
+    }
+}
+
 impl HerdrClient {
     pub fn from_env() -> Self {
         let binary = std::env::var_os("HERDR_BIN_PATH")
@@ -359,6 +421,60 @@ impl HerdrClient {
             argv: display_argv(&self.binary, args),
             message,
         }
+    }
+}
+
+impl HerdrApi for HerdrClient {
+    fn workspace_create(&self, cwd: &Path, label: &str) -> Result<WorkspaceRef, HerdrError> {
+        Self::workspace_create(self, cwd, label)
+    }
+    fn workspace_close(&self, workspace_id: &str) -> Result<(), HerdrError> {
+        Self::workspace_close(self, workspace_id)
+    }
+    fn worktree_create(&self, repo: &Path, branch: &str) -> Result<WorktreeRef, HerdrError> {
+        Self::worktree_create(self, repo, branch)
+    }
+    fn worktree_remove(&self, path: &Path) -> Result<(), HerdrError> {
+        Self::worktree_remove(self, path)
+    }
+    fn pane_split(&self, workspace_id: &str, cwd: &Path) -> Result<PaneInfo, HerdrError> {
+        Self::pane_split(self, workspace_id, cwd)
+    }
+    fn pane_run(&self, pane_id: &str, input: &str) -> Result<(), HerdrError> {
+        Self::pane_run(self, pane_id, input)
+    }
+    fn pane_read(&self, pane_id: &str) -> Result<String, HerdrError> {
+        Self::pane_read(self, pane_id)
+    }
+    fn pane_rename(&self, pane_id: &str, title: &str) -> Result<(), HerdrError> {
+        Self::pane_rename(self, pane_id, title)
+    }
+    fn agent_wait(
+        &self,
+        pane_id: &str,
+        status: &str,
+        timeout: Duration,
+    ) -> Result<WaitOutcome, HerdrError> {
+        Self::agent_wait(self, pane_id, status, timeout)
+    }
+    fn agent_list(&self) -> Result<Vec<AgentInfo>, HerdrError> {
+        Self::agent_list(self)
+    }
+    fn pane_get(&self, pane_id: &str) -> Result<PaneInfo, HerdrError> {
+        Self::pane_get(self, pane_id)
+    }
+    fn api_schema(&self) -> Result<String, HerdrError> {
+        Self::api_schema(self)
+    }
+    fn pane_report_metadata(
+        &self,
+        pane_id: &str,
+        update: &MetadataUpdate,
+    ) -> Result<(), HerdrError> {
+        Self::pane_report_metadata(self, pane_id, update)
+    }
+    fn notification_show(&self, title: &str, body: &str, sound: &str) -> Result<(), HerdrError> {
+        Self::notification_show(self, title, body, sound)
     }
 }
 

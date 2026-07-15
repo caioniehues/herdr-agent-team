@@ -1,6 +1,6 @@
 //! Team status and teardown commands from `docs/spec.md` sections 6 and 12.
 
-use crate::herdr::{AgentInfo, HerdrClient, HerdrError};
+use crate::herdr::{AgentInfo, HerdrApi, HerdrClient, HerdrError};
 use crate::run::{load_run, mark_ended, RunBoard, RunError};
 use crate::types::{RunLifecycle, WorkerLifecycle};
 use serde::Serialize;
@@ -94,28 +94,28 @@ pub fn kill_command(args: &[String]) -> Result<(), StatusKillError> {
     }
 }
 
-pub fn status_run(
+pub fn status_run<H: HerdrApi>(
     run_dir: &Path,
     json: bool,
-    herdr: &HerdrClient,
+    herdr: &H,
 ) -> Result<String, StatusKillError> {
     status_run_with_source(run_dir, json, herdr)
 }
 
-pub fn kill_run(
+pub fn kill_run<H: HerdrApi>(
     run_dir: &Path,
     remove_worktrees: bool,
-    herdr: &HerdrClient,
+    herdr: &H,
 ) -> Result<(), StatusKillError> {
     let backend = SystemTeardown { herdr };
     kill_run_with_backend(run_dir, remove_worktrees, &backend)
 }
 
-pub fn kill_worker(
+pub fn kill_worker<H: HerdrApi>(
     run_dir: &Path,
     worker_name: &str,
     remove_worktrees: bool,
-    herdr: &HerdrClient,
+    herdr: &H,
 ) -> Result<(), StatusKillError> {
     kill_worker_with_backend(
         run_dir,
@@ -202,20 +202,10 @@ fn parse_command_args(
         .ok_or_else(|| StatusKillError::Usage(usage.to_owned()))
 }
 
-trait AgentSource {
-    fn agent_list(&self) -> Result<Vec<AgentInfo>, HerdrError>;
-}
-
-impl AgentSource for HerdrClient {
-    fn agent_list(&self) -> Result<Vec<AgentInfo>, HerdrError> {
-        HerdrClient::agent_list(self)
-    }
-}
-
-fn status_run_with_source(
+fn status_run_with_source<H: HerdrApi>(
     run_dir: &Path,
     json: bool,
-    source: &impl AgentSource,
+    source: &H,
 ) -> Result<String, StatusKillError> {
     let run = load_run(run_dir)?;
     let agents = source.agent_list()?;
@@ -352,11 +342,11 @@ trait TeardownBackend {
     fn worktree_remove(&self, path: &Path) -> Result<(), StatusKillError>;
 }
 
-struct SystemTeardown<'a> {
-    herdr: &'a HerdrClient,
+struct SystemTeardown<'a, H> {
+    herdr: &'a H,
 }
 
-impl TeardownBackend for SystemTeardown<'_> {
+impl<H: HerdrApi> TeardownBackend for SystemTeardown<'_, H> {
     fn workspace_close(&self, workspace_id: &str) -> Result<(), StatusKillError> {
         self.herdr.workspace_close(workspace_id)?;
         Ok(())
@@ -704,7 +694,7 @@ mod tests {
 
     struct FakeAgents(Vec<AgentInfo>);
 
-    impl AgentSource for FakeAgents {
+    impl HerdrApi for FakeAgents {
         fn agent_list(&self) -> Result<Vec<AgentInfo>, HerdrError> {
             Ok(self.0.clone())
         }

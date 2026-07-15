@@ -2,7 +2,7 @@
 
 use crate::types::AgentsMdMode;
 use crate::types::{LauncherEntry, LauncherTable};
-use std::{fs, io, path::Path};
+use std::{env, fs, io, path::Path};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -71,6 +71,14 @@ pub fn load_launcher_table(config_dir: &Path) -> Result<LauncherTable, LauncherE
     let mut table = default_launcher_table();
     table.extend(overrides);
     Ok(table)
+}
+
+/// Load the optional launcher override declared by the plugin environment.
+pub fn load_from_env() -> Result<LauncherTable, LauncherError> {
+    match env::var_os("HERDR_PLUGIN_CONFIG_DIR") {
+        Some(config_dir) => load_launcher_table(Path::new(&config_dir)),
+        None => Ok(default_launcher_table()),
+    }
 }
 
 pub fn launcher_entry<'a>(
