@@ -373,7 +373,7 @@ herdr primitives; they get one plugin verb.
 ### `msg` subcommand
 
 ```
-herdr-agent-team msg <target> <text> [--run <run-dir>]
+herdr-agent-team msg <target> <text> [--attention] [--run <run-dir>]
 ```
 
 - `<target>`: `god` or a worker name from the active run. Resolution: name →
@@ -391,6 +391,11 @@ herdr-agent-team msg <target> <text> [--run <run-dir>]
 - Text is treated as opaque payload; the mesh `<agent-msg>` envelope
   (ADR-0003) travels inside it. Long/durable content goes in a file and the
   message carries the pointer — same rule as everywhere else.
+- `--attention` is valid only for a worker-to-`god` message: the worker's
+  `HERDR_PANE_ID` identifies the run member, the hook metadata records one
+  pending transient metadata ping, and `notification show` is emitted only
+  once for that worker. This is the explicit attention channel; agent status
+  values remain Herdr's fixed enum.
 
 ### Outbox + hook drain
 

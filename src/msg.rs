@@ -5,7 +5,9 @@ use crate::launcher::{
     conservative_adopted_launcher, default_launcher_table, launcher_entry, load_launcher_table,
     LauncherError,
 };
-use crate::run::{list_active_runs, load_run, RunBoard, RunError};
+use crate::run::{
+    list_active_runs, load_hook_metadata, load_run, save_run_with_hook, RunBoard, RunError,
+};
 use crate::types::{LauncherEntry, LauncherTable, RunLifecycle};
 use std::collections::BTreeSet;
 use std::env;
@@ -16,7 +18,8 @@ use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 use thiserror::Error;
 
-const MSG_USAGE: &str = "usage: herdr-agent-team msg <target> <text> [--run <run-dir>]";
+const MSG_USAGE: &str =
+    "usage: herdr-agent-team msg <target> <text> [--attention] [--run <run-dir>]";
 const SUBMIT_GRACE_TIMEOUT: Duration = Duration::from_secs(2);
 const SUBMIT_VERIFY_TIMEOUT: Duration = Duration::from_secs(30);
 const OUTBOX_DIR: &str = "outbox";
@@ -73,6 +76,12 @@ pub enum MsgError {
 
     #[error("message submission to `{target}` timed out waiting for agent status `working`")]
     SubmissionTimeout { target: String },
+
+    #[error("--attention is only valid for a worker message to god")]
+    AttentionTarget,
+
+    #[error("--attention requires HERDR_PANE_ID for a recorded worker pane")]
+    AttentionSource,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -80,6 +89,7 @@ struct MsgArguments {
     target: String,
     text: String,
     run_dir: Option<PathBuf>,
+    attention: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -111,11 +121,16 @@ trait HerdrApi {
         status: &str,
         timeout: Duration,
     ) -> Result<WaitOutcome, HerdrError>;
+    fn notification_show(&self, title: &str, body: &str, sound: &str) -> Result<(), HerdrError>;
 }
 
 impl HerdrApi for HerdrClient {
     fn pane_get(&self, pane_id: &str) -> Result<PaneInfo, HerdrError> {
         HerdrClient::pane_get(self, pane_id)
+    }
+
+    fn notification_show(&self, title: &str, body: &str, sound: &str) -> Result<(), HerdrError> {
+        HerdrClient::notification_show(self, title, body, sound)
     }
 
     fn pane_run(&self, pane_id: &str, input: &str) -> Result<(), HerdrError> {
@@ -134,10 +149,16 @@ impl HerdrApi for HerdrClient {
 
 pub fn msg_command(args: &[String]) -> Result<(), MsgError> {
     let arguments = parse_msg_arguments(args)?;
+    if arguments.attention && arguments.target != "god" {
+        return Err(MsgError::AttentionTarget);
+    }
     let run = select_run(arguments.run_dir.as_deref())?;
     let launchers = load_launchers()?;
     let herdr = HerdrClient::from_env();
     send_message(&run, &launchers, &arguments.target, &arguments.text, &herdr)?;
+    if arguments.attention {
+        request_attention(&run, &arguments.target, &arguments.text, &herdr)?;
+    }
     Ok(())
 }
 
@@ -163,10 +184,16 @@ pub(crate) fn deliver_queued_message(
 fn parse_msg_arguments(args: &[String]) -> Result<MsgArguments, MsgError> {
     let mut positional = Vec::new();
     let mut run_dir = None;
+    let mut attention = false;
     let mut index = 0;
 
     while index < args.len() {
-        if args[index] == "--run" {
+        if args[index] == "--attention" {
+            if attention {
+                return Err(arguments("--attention may only be supplied once"));
+            }
+            attention = true;
+        } else if args[index] == "--run" {
             if run_dir.is_some() {
                 return Err(arguments("--run may only be supplied once"));
             }
@@ -193,7 +220,52 @@ fn parse_msg_arguments(args: &[String]) -> Result<MsgArguments, MsgError> {
         target: positional.remove(0),
         text: positional.remove(0),
         run_dir,
+        attention,
     })
+}
+
+fn request_attention<H: HerdrApi>(
+    run: &RunBoard,
+    target: &str,
+    text: &str,
+    herdr: &H,
+) -> Result<(), MsgError> {
+    if target != "god" {
+        return Err(MsgError::AttentionTarget);
+    }
+    let source_pane = env::var("HERDR_PANE_ID").map_err(|_| MsgError::AttentionSource)?;
+    request_attention_from_pane(run, text, &source_pane, herdr)
+}
+
+fn request_attention_from_pane<H: HerdrApi>(
+    run: &RunBoard,
+    text: &str,
+    source_pane: &str,
+    herdr: &H,
+) -> Result<(), MsgError> {
+    let worker_name = run
+        .state
+        .workers
+        .iter()
+        .find_map(|(name, worker)| {
+            (worker.pane_id.as_deref() == Some(source_pane)).then(|| name.clone())
+        })
+        .ok_or(MsgError::AttentionSource)?;
+    let mut metadata = load_hook_metadata(&run.dir)?;
+    metadata.attention_pending.insert(worker_name.clone(), true);
+    let first = metadata
+        .aggregate_notifications
+        .insert(format!("attention:{worker_name}"), true)
+        .is_none();
+    save_run_with_hook(run, &metadata)?;
+    if first {
+        herdr.notification_show(
+            "Worker needs attention",
+            &format!("{worker_name}: {}", strip_escape_sequences(text)),
+            "request",
+        )?;
+    }
+    Ok(())
 }
 
 fn arguments(detail: impl AsRef<str>) -> MsgError {
@@ -535,6 +607,7 @@ mod tests {
         PaneGet(String),
         PaneRun(String, String),
         AgentWait(String, String),
+        Notification(String, String, String),
     }
 
     struct FakeHerdr {
@@ -600,6 +673,20 @@ mod tests {
                 .borrow_mut()
                 .pop_front()
                 .unwrap_or(WaitOutcome::Reached))
+        }
+
+        fn notification_show(
+            &self,
+            title: &str,
+            body: &str,
+            sound: &str,
+        ) -> Result<(), HerdrError> {
+            self.calls.borrow_mut().push(Call::Notification(
+                title.to_owned(),
+                body.to_owned(),
+                sound.to_owned(),
+            ));
+            Ok(())
         }
     }
 
@@ -829,6 +916,7 @@ mod tests {
                 target: "builder".to_owned(),
                 text: "hello".to_owned(),
                 run_dir: Some(PathBuf::from("/tmp/run")),
+                attention: false,
             }
         );
         assert!(parse_msg_arguments(&["builder".to_owned()]).is_err());
@@ -838,6 +926,37 @@ mod tests {
             "--run".to_owned(),
         ])
         .is_err());
+    }
+
+    #[test]
+    fn attention_request_notifies_once_and_persists_a_metadata_ping() {
+        let temp = TempDir::new();
+        let run = crate::run::create_run(
+            temp.path(),
+            fixture_run(temp.path(), "builder", "claude").state,
+        )
+        .expect("persist attention fixture");
+        let herdr = FakeHerdr::new("claude", Some("working"), []);
+
+        request_attention_from_pane(&run, "please review", "worker-pane", &herdr)
+            .expect("first attention request");
+        request_attention_from_pane(&run, "please review", "worker-pane", &herdr)
+            .expect("repeat attention request");
+
+        assert_eq!(
+            herdr
+                .calls()
+                .iter()
+                .filter(|call| matches!(call, Call::Notification(..)))
+                .count(),
+            1,
+        );
+        let metadata = crate::run::load_hook_metadata(&run.dir).expect("load persisted attention");
+        assert_eq!(metadata.attention_pending.get("builder"), Some(&true));
+        assert_eq!(
+            metadata.aggregate_notifications.get("attention:builder"),
+            Some(&true)
+        );
     }
 
     #[test]

@@ -114,6 +114,7 @@ pub fn on_agent_status(
                     worker_name,
                     status,
                     sequence,
+                    attention,
                 } => {
                     let Some(capabilities) = reconciliation.metadata.metadata_capabilities.as_ref()
                     else {
@@ -132,6 +133,7 @@ pub fn on_agent_status(
                             role: &worker.role,
                             task: None,
                             status: &status,
+                            attention,
                         },
                         capabilities,
                         sequence,

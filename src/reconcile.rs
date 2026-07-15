@@ -67,6 +67,7 @@ pub enum ReconciliationAction {
         worker_name: String,
         status: String,
         sequence: u64,
+        attention: bool,
     },
     Notify {
         title: String,
@@ -91,6 +92,8 @@ pub struct HookMetadata {
     pub metadata_sequence: BTreeMap<String, u64>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub blocked_since_ms: BTreeMap<String, u64>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub attention_pending: BTreeMap<String, bool>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub aggregate_notifications: BTreeMap<String, bool>,
 }
@@ -159,6 +162,13 @@ pub fn reconcile_at(
     match event {
         IncomingEvent::AgentStatusChanged { status, .. } => {
             let Target::Worker(worker_name) = target else {
+                sweep_blocked_workers(
+                    &state,
+                    &mut metadata,
+                    &mut actions,
+                    now_ms,
+                    blocked_threshold_ms,
+                );
                 return Reconciliation {
                     state,
                     metadata,
@@ -177,10 +187,12 @@ pub fn reconcile_at(
                 .entry(worker_name.clone())
                 .or_insert(0);
             *sequence += 1;
+            let attention = metadata.attention_pending.remove(&worker_name).is_some();
             actions.push(ReconciliationAction::PublishMetadata {
                 worker_name: worker_name.clone(),
                 status: status.clone(),
                 sequence: *sequence,
+                attention,
             });
             if status == "idle" || status == "done" {
                 actions.push(ReconciliationAction::DrainOutbox {
@@ -197,35 +209,12 @@ pub fn reconcile_at(
                 });
             }
             if status == "blocked" {
-                let blocked_since = metadata
+                metadata
                     .blocked_since_ms
                     .entry(worker_name.clone())
                     .or_insert(now_ms);
-                if now_ms.saturating_sub(*blocked_since) >= blocked_threshold_ms {
-                    notify_once(
-                        &mut metadata,
-                        &mut actions,
-                        format!("blocked:{worker_name}"),
-                        "Worker blocked",
-                        format!(
-                            "{} has remained blocked beyond the configured threshold.",
-                            worker_name
-                        ),
-                        "request",
-                    );
-                }
             } else {
                 metadata.blocked_since_ms.remove(&worker_name);
-            }
-            if status == "needs_attention" {
-                notify_once(
-                    &mut metadata,
-                    &mut actions,
-                    format!("attention:{worker_name}"),
-                    "Worker needs attention",
-                    format!("{} explicitly requested attention.", worker_name),
-                    "request",
-                );
             }
             if state.workers.keys().all(|name| {
                 matches!(
@@ -306,6 +295,13 @@ pub fn reconcile_at(
         }
         IncomingEvent::PaneAgentDetected { agent, .. } => {
             let Target::Worker(worker_name) = target else {
+                sweep_blocked_workers(
+                    &state,
+                    &mut metadata,
+                    &mut actions,
+                    now_ms,
+                    blocked_threshold_ms,
+                );
                 return Reconciliation {
                     state,
                     metadata,
@@ -321,10 +317,42 @@ pub fn reconcile_at(
         }
     }
 
+    sweep_blocked_workers(
+        &state,
+        &mut metadata,
+        &mut actions,
+        now_ms,
+        blocked_threshold_ms,
+    );
+
     Reconciliation {
         state,
         metadata,
         actions,
+    }
+}
+
+fn sweep_blocked_workers(
+    state: &RunState,
+    metadata: &mut HookMetadata,
+    actions: &mut Vec<ReconciliationAction>,
+    now_ms: u64,
+    blocked_threshold_ms: u64,
+) {
+    for (worker_name, blocked_since) in metadata.blocked_since_ms.clone() {
+        if now_ms.saturating_sub(blocked_since) >= blocked_threshold_ms {
+            notify_once(
+                metadata,
+                actions,
+                format!("blocked:{worker_name}"),
+                "Worker blocked",
+                format!(
+                    "{worker_name} has remained blocked beyond the configured threshold in {}.",
+                    state.spec.name
+                ),
+                "request",
+            );
+        }
     }
 }
 
@@ -595,25 +623,12 @@ mod tests {
             0,
         );
 
-        let attention = reconcile(
-            &IncomingEvent::AgentStatusChanged {
-                pane_id: "pane-1".into(),
-                status: "needs_attention".into(),
-            },
-            repeated_blocked.state,
-            repeated_blocked.metadata,
-        );
-        assert!(attention
-            .metadata
-            .aggregate_notifications
-            .contains_key("attention:builder"));
-
         let exited = reconcile(
             &IncomingEvent::PaneExited {
                 pane_id: "pane-1".into(),
             },
-            attention.state,
-            attention.metadata,
+            repeated_blocked.state,
+            repeated_blocked.metadata,
         );
         let repeated_exit = reconcile(
             &IncomingEvent::PaneExited {
@@ -697,5 +712,54 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn unrelated_worker_event_sweeps_blocked_duration() {
+        let mut two_workers = state();
+        two_workers.spec.workers.push(WorkerSpec {
+            name: "reviewer".to_owned(),
+            agent: "claude".to_owned(),
+            role: "review".to_owned(),
+            worktree: false,
+            branch: None,
+            brief: PathBuf::from("review.md"),
+        });
+        two_workers.workers.insert(
+            "reviewer".to_owned(),
+            WorkerRunState {
+                workspace_id: Some("workspace-2".to_owned()),
+                pane_id: Some("pane-2".to_owned()),
+                agent_id: None,
+                agent_session: None,
+                worktree_path: None,
+                adopted: false,
+                lifecycle: WorkerLifecycle::Running,
+            },
+        );
+        let blocked = reconcile_at(
+            &IncomingEvent::AgentStatusChanged {
+                pane_id: "pane-1".into(),
+                status: "blocked".into(),
+            },
+            two_workers,
+            HookMetadata::default(),
+            100,
+            1_000,
+        );
+        let later_reviewer_event = reconcile_at(
+            &IncomingEvent::AgentStatusChanged {
+                pane_id: "pane-2".into(),
+                status: "working".into(),
+            },
+            blocked.state,
+            blocked.metadata,
+            1_100,
+            1_000,
+        );
+        assert!(later_reviewer_event.actions.iter().any(|action| matches!(
+            action,
+            ReconciliationAction::Notify { title, .. } if title == "Worker blocked"
+        )));
     }
 }

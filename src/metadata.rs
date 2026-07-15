@@ -51,6 +51,7 @@ pub struct MetadataFacts<'a> {
     pub role: &'a str,
     pub task: Option<&'a str>,
     pub status: &'a str,
+    pub attention: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -85,7 +86,7 @@ pub fn map_facts(
             .then(|| (facts.status.to_owned(), compact)),
         seq: capabilities.seq.then_some(sequence),
         // An explicit attention request is a transient presentation ping.
-        ttl_ms: (facts.status == "needs_attention" && capabilities.ttl_ms).then_some(30_000),
+        ttl_ms: (facts.attention && capabilities.ttl_ms).then_some(30_000),
     })
 }
 
@@ -103,6 +104,7 @@ mod tests {
                 role: "builder",
                 task: Some("implement gate"),
                 status: "working",
+                attention: false,
             },
             &capabilities,
             3,
@@ -113,5 +115,28 @@ mod tests {
         assert_eq!(update.custom_status, None);
         assert_eq!(update.state_label, None);
         assert_eq!(update.seq, None);
+    }
+
+    #[test]
+    fn attention_fact_uses_a_transient_ttl_when_supported() {
+        let capabilities = MetadataCapabilities {
+            report_metadata: true,
+            display_agent: true,
+            ttl_ms: true,
+            ..Default::default()
+        };
+        let update = map_facts(
+            MetadataFacts {
+                team: "wave3",
+                role: "builder",
+                task: None,
+                status: "working",
+                attention: true,
+            },
+            &capabilities,
+            1,
+        )
+        .expect("supported metadata");
+        assert_eq!(update.ttl_ms, Some(30_000));
     }
 }
