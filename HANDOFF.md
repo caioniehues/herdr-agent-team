@@ -13,12 +13,14 @@ and core wave are committed; docs remain the contract.
 
 ## State
 
-- Wave 0 scaffold: `0d75e23`.
-- Wave 1 core modules (tickets 02-06): `a6e0ff9` — spec parsing/dry-run,
-  launcher table, generated worker protocols, typed Herdr client, and durable run
-  board. Central gate green: build, fmt, Clippy `-D warnings`, 32 tests.
-- `spawn --dry-run` is demoable. Real spawn, event hook, status, and kill are
-  still ticket stubs awaiting wave 2.
+- Wave 0 scaffold: `0d75e23`. Wave 1 core (tickets 02-06): `a6e0ff9`.
+- 2026-07-15: docs+ADR-0008 `2cd4e31`; waves 2+2.5 `15cd171` (spawn, hook,
+  status/kill, `msg` verb, `queues_midturn`, msg-only protocols); ticket 15
+  outbox drain `9e2f613`; ticket 10 worktree workers `20b8633`.
+- Central gate green: build, fmt, Clippy `-D warnings`, 82 tests. Release
+  binary pre-built. Manifest carries spawn/status/kill actions + the event
+  hook. **Everything before the DoD is code-complete; only the human-watched
+  DoD run (spec §10) remains.**
 - Local git only — **NOT on GitHub yet.** Publishing = create public repo
   `caioniehues/herdr-agent-team` + topic `herdr-plugin` (marketplace auto-lists
   in ~30 min). Ask Caio before pushing.
@@ -40,10 +42,11 @@ and core wave are committed; docs remain the contract.
    - Codex: `pane run` submits in one call; double-Enter only needed for
      `agent send` + immediate `send-keys Enter` (debounce). Rule: always
      `pane run`.
-2. Run wave 2 in parallel: ticket 07 spawn happy path, ticket 08 event hook,
-   ticket 09 status/kill. Serialize `src/main.rs` ownership: 07 edits it first;
-   08/09 report wiring patches if their edits would conflict.
-3. Run ticket 10 worktree-worker support after 07 lands.
+2. ~~Wave 2 (tickets 07-09)~~ — **LANDED 2026-07-15** in `15cd171` (spawn
+   happy path, event hook, status/kill + client-mismatch remediation).
+3. ~~Ticket 10 worktree workers~~ — **LANDED 2026-07-15** in `20b8633`
+   (worktree create before allocation, setup in worktree cwd with captured
+   output, ADR-0004 cwd discipline; 82 tests).
 4. ~~Messaging wave (tickets 12–15 — ADR-0008, spec §11)~~ — **LANDED
    2026-07-15** (`15cd171` waves 2+2.5, `9e2f613` ticket 15; 79 tests).
    `msg` verb + `queues_midturn` + protocols brief msg-only + outbox drain
