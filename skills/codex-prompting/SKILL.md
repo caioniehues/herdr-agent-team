@@ -36,19 +36,26 @@ target pane.
 - Keep the generated worker protocol separate. Inject its absolute path and the
   brief's absolute path; do not overwrite or synthesize repository
   `AGENTS.md`.
-- Inline every required procedure, checklist, template, and acceptance rule in
-  the brief or a named file the brief orders Codex to read. Codex does not load
-  Claude Code user-level skills or accept their slash invocations. A command
-  such as `/ask-matt` fails with `Unrecognized command`.
-- Route a task whose behavior depends on a Claude skill to a Claude worker, or
-  inline that skill's relevant content into the Codex brief. Claude pane
-  workers do load user-level Claude skills `[live 2026-07-15]`.
+- Invoke loaded skills with `$<skill-name>`. Type `$` in the composer without
+  submitting to open Codex's live skill/template picker; select from the names
+  shown there. `$ask-matt <question>`, for example, loads and follows the Ask
+  Matt skill `[live 2026-07-15, codex-cli 0.144.4]`.
+- Never translate that invocation to Claude-style slash syntax. `/ask-matt`
+  fails with `Unrecognized command`; `/` opens Codex's own command surface,
+  while `$` opens its skill/template surface.
+- Route skill-dependent tasks to Codex with `$<skill-name>` when the required
+  skill appears in its picker. Inline the relevant procedure, checklist,
+  template, and acceptance rules only as optional hardening or when the skill
+  is unavailable. Route to a Claude worker when the task specifically requires
+  a skill that only Claude loads. Claude pane workers also load user-level
+  Claude skills `[live 2026-07-15]`.
 - Specify owned files, exclusions, exact verification commands, Git contract,
   report path, and completion sentinel. Assume no implied workflow from a
   coordinator-side skill name.
 
-Codex has its own `/skills` surface in 0.144.4; that does not make Claude Code
-skills or arbitrary Claude slash commands portable.
+Codex's `$` skill invocation and `/` command invocation are separate surfaces.
+Probe both in the target pane after a Codex upgrade; never assume a skill name
+is also a slash command.
 
 ## Submit and follow up safely
 
