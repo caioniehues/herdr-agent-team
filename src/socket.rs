@@ -854,6 +854,7 @@ mod tests {
             rows: vec![InboxRow {
                 worker: "m".into(),
                 report_present: false,
+                report_ready: false,
                 report_mtime_ms: None,
                 attention: true,
                 read: false,

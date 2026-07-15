@@ -256,8 +256,8 @@ feature.
    shared FakeHerdr, hook.rs trait-injected; launcher loading deduped.
    Behavior-neutral enabler for the socket backend and the god toolkit.
 6. **God toolkit (#23, #24, #25)** — reshaped 2026-07-15 (god-lens review):
-   `team wait --until any-report|report:<w>|all-reports|blocked|attention|
-   all-terminal` over run state + inbox (report existence = completion truth;
+  `team wait --until any-report|report:<w>|all-reports|blocked|attention|
+  all-terminal` over run state + inbox (Result ready report = completion truth;
    never pane attention states; CLI-polling v1 behind a collector trait);
    `inbox`/`report` verbs with read-marks and stopped-not-done triage;
    zero-ceremony invocation (self-resolved plugin dirs); `msg all`;
@@ -572,7 +572,10 @@ herdr-agent-team report <worker> [--run <dir>] [--head N]
   returns the distinct `inactive_run` verdict and exits 4; an explicitly
   selected inactive run is rejected before polling. Usage, resolution, and I/O
   errors exit 1. `--json` emits one stable single-line verdict.
-- Report-file existence is completion truth. `blocked` and `attention` come
+- A report is **Result ready** only when its final non-empty line is the
+  worker-protocol completion sentinel `HERDR_TEAM_WORKER_COMPLETE`; mere file
+  existence is not completion truth. `any-report`, `report:<worker>`, and
+  `all-reports` wait only for Result ready reports. `blocked` and `attention` come
   from durable hook metadata; `all-terminal` comes from worker lifecycle.
   `all-terminal` is literal: failed and orphaned workers count as terminal and
   the condition exits 0. For `blocked`/`attention`, an all-terminal team that
