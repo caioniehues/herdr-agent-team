@@ -1,6 +1,6 @@
 id = "caioniehues.agent-team"
 name = "Agent Team"
-version = "0.6.0"
+version = "0.7.0"
 min_herdr_version = "0.7.0"
 description = "Spawn and run heterogeneous coding-agent teams (Claude, Codex, ...) under a coordinating god session, with push-based status reporting"
 platforms = ["linux", "macos"]
