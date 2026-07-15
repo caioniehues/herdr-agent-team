@@ -27,9 +27,16 @@ and core wave are committed; docs remain the contract.
   and preserved the dirty worktree. Evidence: run dir
   `dod-demo-1784075553674` under the plugin state dir; dirty worktree
   `~/.herdr/worktrees/limux/dod-builder-1` kept for inspection.
-- Open: ticket 17 (workers need PATH/env to invoke the briefed `msg` verb —
-  claude improvised, codex would fail) + cosmetic worker-lifecycle-after-kill
-  bookkeeping. Ticket 17 is the last blocker before the publish conversation.
+- Ticket 17 landed: `699988e` — protocols embed shell-quoted absolute
+  binary (current_exe) + `--run`; live re-verified from a bare codex pane
+  (command runs verbatim; codex's default sandbox then denies the herdr
+  socket — launcher policy, documented in spec §11 + examples/agents.toml).
+  85 tests green.
+- Open: ticket 18 (cosmetic — kill leaves worker lifecycles `running`).
+- **v1 is DoD-complete. Next step is the publish conversation with Caio:**
+  create public repo `caioniehues/herdr-agent-team` + `herdr-plugin` topic
+  (marketplace auto-lists in ~30 min), migrate open tickets to GitHub
+  Issues per docs/agents/issue-tracker.md. NEVER without explicit go-ahead.
 - Local git only — **NOT on GitHub yet.** Publishing = create public repo
   `caioniehues/herdr-agent-team` + topic `herdr-plugin` (marketplace auto-lists
   in ~30 min). Ask Caio before pushing.
