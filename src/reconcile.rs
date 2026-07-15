@@ -1,5 +1,6 @@
 //! Pure hook event reconciliation for the run-board.
 
+use crate::metadata::MetadataCapabilities;
 use crate::types::{RunLifecycle, RunState, WorkerLifecycle};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -38,14 +39,40 @@ pub enum IncomingEvent {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReconciliationAction {
     RecordEvent,
-    TrackAgentStatus { worker_name: String, status: String },
-    InjectPointer { worker_name: String, status: String },
-    DrainOutbox { worker_name: String },
-    MigratePane { worker_name: String },
+    TrackAgentStatus {
+        worker_name: String,
+        status: String,
+    },
+    InjectPointer {
+        worker_name: String,
+        status: String,
+    },
+    DrainOutbox {
+        worker_name: String,
+    },
+    MigratePane {
+        worker_name: String,
+    },
     MigrateGodPane,
-    MarkWorkerOrphaned { worker_name: String },
-    EndWorker { worker_name: String },
-    BindAgentIdentity { worker_name: String },
+    MarkWorkerOrphaned {
+        worker_name: String,
+    },
+    EndWorker {
+        worker_name: String,
+    },
+    BindAgentIdentity {
+        worker_name: String,
+    },
+    PublishMetadata {
+        worker_name: String,
+        status: String,
+        sequence: u64,
+    },
+    Notify {
+        title: String,
+        body: String,
+        sound: String,
+    },
     EndRun,
 }
 
@@ -58,6 +85,14 @@ pub struct HookMetadata {
     pub worker_agent_identity: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub god_workspace_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata_capabilities: Option<MetadataCapabilities>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub metadata_sequence: BTreeMap<String, u64>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub blocked_since_ms: BTreeMap<String, u64>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub aggregate_notifications: BTreeMap<String, bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -68,10 +103,17 @@ pub struct Reconciliation {
 }
 
 /// Reconcile one event against one active run without I/O or process spawning.
-pub fn reconcile(
+pub fn reconcile(event: &IncomingEvent, state: RunState, metadata: HookMetadata) -> Reconciliation {
+    reconcile_at(event, state, metadata, 0, 0)
+}
+
+/// Pure reconciliation with an injected clock for the blocked-duration policy.
+pub fn reconcile_at(
     event: &IncomingEvent,
     mut state: RunState,
     mut metadata: HookMetadata,
+    now_ms: u64,
+    blocked_threshold_ms: u64,
 ) -> Reconciliation {
     let mut actions = Vec::new();
     let target = match event {
@@ -130,6 +172,16 @@ pub fn reconcile(
                 worker_name: worker_name.clone(),
                 status: status.clone(),
             });
+            let sequence = metadata
+                .metadata_sequence
+                .entry(worker_name.clone())
+                .or_insert(0);
+            *sequence += 1;
+            actions.push(ReconciliationAction::PublishMetadata {
+                worker_name: worker_name.clone(),
+                status: status.clone(),
+                sequence: *sequence,
+            });
             if status == "idle" || status == "done" {
                 actions.push(ReconciliationAction::DrainOutbox {
                     worker_name: worker_name.clone(),
@@ -140,9 +192,58 @@ pub fn reconcile(
                 || (status == "done" && previous.as_deref() == Some("working"))
             {
                 actions.push(ReconciliationAction::InjectPointer {
-                    worker_name,
+                    worker_name: worker_name.clone(),
                     status: status.clone(),
                 });
+            }
+            if status == "blocked" {
+                let blocked_since = metadata
+                    .blocked_since_ms
+                    .entry(worker_name.clone())
+                    .or_insert(now_ms);
+                if now_ms.saturating_sub(*blocked_since) >= blocked_threshold_ms {
+                    notify_once(
+                        &mut metadata,
+                        &mut actions,
+                        format!("blocked:{worker_name}"),
+                        "Worker blocked",
+                        format!(
+                            "{} has remained blocked beyond the configured threshold.",
+                            worker_name
+                        ),
+                        "request",
+                    );
+                }
+            } else {
+                metadata.blocked_since_ms.remove(&worker_name);
+            }
+            if status == "needs_attention" {
+                notify_once(
+                    &mut metadata,
+                    &mut actions,
+                    format!("attention:{worker_name}"),
+                    "Worker needs attention",
+                    format!("{} explicitly requested attention.", worker_name),
+                    "request",
+                );
+            }
+            if state.workers.keys().all(|name| {
+                matches!(
+                    metadata.worker_status.get(name).map(String::as_str),
+                    Some("idle" | "done")
+                )
+            }) {
+                notify_once(
+                    &mut metadata,
+                    &mut actions,
+                    "team-complete".to_owned(),
+                    "Team complete",
+                    format!(
+                        "All workers in {} reached a terminal status.",
+                        state.spec.name
+                    ),
+                    "done",
+                );
             }
         }
         IncomingEvent::PaneMoved {
@@ -174,7 +275,17 @@ pub fn reconcile(
                     .get_mut(&worker_name)
                     .expect("matched worker exists")
                     .lifecycle = WorkerLifecycle::Orphaned;
-                actions.push(ReconciliationAction::MarkWorkerOrphaned { worker_name });
+                actions.push(ReconciliationAction::MarkWorkerOrphaned {
+                    worker_name: worker_name.clone(),
+                });
+                notify_once(
+                    &mut metadata,
+                    &mut actions,
+                    format!("exit:{worker_name}"),
+                    "Worker exited",
+                    format!("{} exited before the team released it.", worker_name),
+                    "request",
+                );
                 end_run_if_no_live_workers(&mut state, &mut actions);
             }
             Target::God => end_run(&mut state, &mut actions),
@@ -214,6 +325,23 @@ pub fn reconcile(
         state,
         metadata,
         actions,
+    }
+}
+
+fn notify_once(
+    metadata: &mut HookMetadata,
+    actions: &mut Vec<ReconciliationAction>,
+    key: String,
+    title: &str,
+    body: String,
+    sound: &str,
+) {
+    if metadata.aggregate_notifications.insert(key, true).is_none() {
+        actions.push(ReconciliationAction::Notify {
+            title: title.to_owned(),
+            body,
+            sound: sound.to_owned(),
+        });
     }
 }
 
@@ -421,6 +549,153 @@ mod tests {
             .state
             .lifecycle,
             RunLifecycle::Ended
+        );
+    }
+
+    #[test]
+    fn metadata_sequences_and_aggregate_notifications_are_at_most_once() {
+        let working = reconcile(
+            &IncomingEvent::AgentStatusChanged {
+                pane_id: "pane-1".into(),
+                status: "working".into(),
+            },
+            state(),
+            HookMetadata::default(),
+        );
+        let blocked = reconcile(
+            &IncomingEvent::AgentStatusChanged {
+                pane_id: "pane-1".into(),
+                status: "blocked".into(),
+            },
+            working.state,
+            working.metadata,
+        );
+        let repeated_blocked = reconcile(
+            &IncomingEvent::AgentStatusChanged {
+                pane_id: "pane-1".into(),
+                status: "blocked".into(),
+            },
+            blocked.state,
+            blocked.metadata,
+        );
+        assert_eq!(repeated_blocked.metadata.metadata_sequence["builder"], 3);
+        assert_eq!(
+            repeated_blocked
+                .metadata
+                .aggregate_notifications
+                .get("blocked:builder"),
+            Some(&true),
+        );
+        assert_eq!(
+            repeated_blocked
+                .actions
+                .iter()
+                .filter(|action| matches!(action, ReconciliationAction::Notify { .. }))
+                .count(),
+            0,
+        );
+
+        let attention = reconcile(
+            &IncomingEvent::AgentStatusChanged {
+                pane_id: "pane-1".into(),
+                status: "needs_attention".into(),
+            },
+            repeated_blocked.state,
+            repeated_blocked.metadata,
+        );
+        assert!(attention
+            .metadata
+            .aggregate_notifications
+            .contains_key("attention:builder"));
+
+        let exited = reconcile(
+            &IncomingEvent::PaneExited {
+                pane_id: "pane-1".into(),
+            },
+            attention.state,
+            attention.metadata,
+        );
+        let repeated_exit = reconcile(
+            &IncomingEvent::PaneExited {
+                pane_id: "pane-1".into(),
+            },
+            exited.state,
+            exited.metadata,
+        );
+        assert!(repeated_exit
+            .metadata
+            .aggregate_notifications
+            .contains_key("exit:builder"));
+        assert_eq!(
+            repeated_exit
+                .actions
+                .iter()
+                .filter(|action| matches!(action, ReconciliationAction::Notify { .. }))
+                .count(),
+            0,
+        );
+
+        let completed = reconcile(
+            &IncomingEvent::AgentStatusChanged {
+                pane_id: "pane-1".into(),
+                status: "idle".into(),
+            },
+            state(),
+            HookMetadata::default(),
+        );
+        assert!(completed
+            .metadata
+            .aggregate_notifications
+            .contains_key("team-complete"));
+    }
+
+    #[test]
+    fn blocked_notification_waits_for_the_configured_duration() {
+        let first = reconcile_at(
+            &IncomingEvent::AgentStatusChanged {
+                pane_id: "pane-1".into(),
+                status: "blocked".into(),
+            },
+            state(),
+            HookMetadata::default(),
+            100,
+            1_000,
+        );
+        assert!(!first
+            .actions
+            .iter()
+            .any(|action| matches!(action, ReconciliationAction::Notify { .. })));
+        let before_threshold = reconcile_at(
+            &IncomingEvent::AgentStatusChanged {
+                pane_id: "pane-1".into(),
+                status: "blocked".into(),
+            },
+            first.state,
+            first.metadata,
+            1_099,
+            1_000,
+        );
+        assert!(!before_threshold
+            .actions
+            .iter()
+            .any(|action| matches!(action, ReconciliationAction::Notify { .. })));
+        let elapsed = reconcile_at(
+            &IncomingEvent::AgentStatusChanged {
+                pane_id: "pane-1".into(),
+                status: "blocked".into(),
+            },
+            before_threshold.state,
+            before_threshold.metadata,
+            1_100,
+            1_000,
+        );
+        assert_eq!(
+            elapsed
+                .actions
+                .iter()
+                .filter(|action| matches!(action, ReconciliationAction::Notify { .. }))
+                .count(),
+            1
         );
     }
 }

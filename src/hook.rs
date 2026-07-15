@@ -1,12 +1,14 @@
 //! Push-based worker status report and outbox hook from `docs/spec.md` sections 5 and 11.
 
 use crate::herdr::HerdrClient;
+use crate::metadata::{map_facts, MetadataCapabilities, MetadataFacts};
 use crate::msg;
-use crate::reconcile::{reconcile, IncomingEvent, ReconciliationAction};
+use crate::reconcile::{reconcile_at, IncomingEvent, ReconciliationAction};
 use crate::run;
 use serde_json::{json, Value};
 use std::fmt::Display;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -63,9 +65,33 @@ pub fn on_agent_status(
 
     for mut run in run::list_active_runs(state_dir)? {
         let metadata = run::load_hook_metadata(&run.dir)?;
-        let reconciliation = reconcile(&event, run.state.clone(), metadata);
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(run::RunError::from)?
+            .as_millis()
+            .min(u128::from(u64::MAX)) as u64;
+        let blocked_threshold_ms = std::env::var("HERDR_AGENT_TEAM_BLOCKED_THRESHOLD_MS")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(300_000);
+        let mut reconciliation = reconcile_at(
+            &event,
+            run.state.clone(),
+            metadata,
+            now_ms,
+            blocked_threshold_ms,
+        );
         if reconciliation.actions.is_empty() {
             continue;
+        }
+        if reconciliation.metadata.metadata_capabilities.is_none()
+            && reconciliation
+                .actions
+                .iter()
+                .any(|action| matches!(action, ReconciliationAction::PublishMetadata { .. }))
+        {
+            reconciliation.metadata.metadata_capabilities =
+                Some(MetadataCapabilities::from_schema(&herdr.api_schema()?));
         }
         run.state = reconciliation.state;
         run::save_run_with_hook(&run, &reconciliation.metadata)?;
@@ -83,6 +109,45 @@ pub fn on_agent_status(
                     status,
                 } => {
                     inject_pointer(&run, &worker_name, &status, herdr)?;
+                }
+                ReconciliationAction::PublishMetadata {
+                    worker_name,
+                    status,
+                    sequence,
+                } => {
+                    let Some(capabilities) = reconciliation.metadata.metadata_capabilities.as_ref()
+                    else {
+                        continue;
+                    };
+                    let worker = run
+                        .state
+                        .spec
+                        .workers
+                        .iter()
+                        .find(|worker| worker.name == worker_name)
+                        .expect("reconciled worker is in spec");
+                    if let Some(update) = map_facts(
+                        MetadataFacts {
+                            team: &run.state.spec.name,
+                            role: &worker.role,
+                            task: None,
+                            status: &status,
+                        },
+                        capabilities,
+                        sequence,
+                    ) {
+                        if let Some(pane_id) = run
+                            .state
+                            .workers
+                            .get(&worker_name)
+                            .and_then(|worker| worker.pane_id.as_deref())
+                        {
+                            herdr.pane_report_metadata(pane_id, &update)?;
+                        }
+                    }
+                }
+                ReconciliationAction::Notify { title, body, sound } => {
+                    herdr.notification_show(&title, &body, &sound)?
                 }
                 ReconciliationAction::RecordEvent
                 | ReconciliationAction::TrackAgentStatus { .. }
@@ -630,7 +695,12 @@ mod tests {
             .map(|line| serde_json::from_str::<Value>(line).unwrap())
             .collect::<Vec<_>>();
         assert_eq!(events, [captured_event, event_with_optional_fields]);
-        assert!(!fake.log.exists(), "non-terminal statuses must not inject");
+        assert!(
+            fake.argv()
+                .windows(2)
+                .all(|window| window != ["pane", "run"]),
+            "non-terminal statuses must not inject pointers"
+        );
     }
 
     #[test]
@@ -672,9 +742,8 @@ mod tests {
         let report_path = run.dir.join("inbox/builder.md");
         assert!(report_path.is_absolute());
         let argv = fake.argv();
-        assert_eq!(
-            argv,
-            [
+        assert!(argv.windows(4).any(|window| window
+            == [
                 "pane",
                 "run",
                 "god-pane",
@@ -682,8 +751,10 @@ mod tests {
                     "[team alpha] builder is blocked — report: {}",
                     report_path.display()
                 ),
-            ]
-        );
+            ]));
+        assert!(argv
+            .windows(3)
+            .any(|window| window == ["notification", "show", "Team complete"]));
     }
 
     #[test]

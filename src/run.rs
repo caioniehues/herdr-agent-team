@@ -122,6 +122,22 @@ pub fn save_run_with_hook(run: &RunBoard, hook: &HookMetadata) -> Result<(), Run
             contents.push_str("\n[hook.worker_agent_identity]\n");
             contents.push_str(&toml::to_string(&hook.worker_agent_identity)?);
         }
+        if let Some(capabilities) = &hook.metadata_capabilities {
+            contents.push_str("\n[hook.metadata_capabilities]\n");
+            contents.push_str(&toml::to_string(capabilities)?);
+        }
+        if !hook.metadata_sequence.is_empty() {
+            contents.push_str("\n[hook.metadata_sequence]\n");
+            contents.push_str(&toml::to_string(&hook.metadata_sequence)?);
+        }
+        if !hook.blocked_since_ms.is_empty() {
+            contents.push_str("\n[hook.blocked_since_ms]\n");
+            contents.push_str(&toml::to_string(&hook.blocked_since_ms)?);
+        }
+        if !hook.aggregate_notifications.is_empty() {
+            contents.push_str("\n[hook.aggregate_notifications]\n");
+            contents.push_str(&toml::to_string(&hook.aggregate_notifications)?);
+        }
     }
     write_run_contents(&run.dir, &contents)
 }

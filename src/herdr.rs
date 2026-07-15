@@ -1,5 +1,6 @@
 //! Typed wrapper for Herdr CLI operations required by `docs/spec.md` sections 4, 6, and 9.
 
+use crate::metadata::{MetadataUpdate, SOURCE};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -273,6 +274,60 @@ impl HerdrClient {
         let args = args(["pane", "get"]).with(pane_id).finish();
         let stdout = self.invoke(&args)?;
         parse_pane_info(&stdout).map_err(|message| self.invalid_response(&args, message))
+    }
+
+    pub fn api_schema(&self) -> Result<String, HerdrError> {
+        self.invoke(&args(["api", "schema", "--json"]).finish())
+    }
+
+    pub fn pane_report_metadata(
+        &self,
+        pane_id: &str,
+        update: &MetadataUpdate,
+    ) -> Result<(), HerdrError> {
+        let mut command = args(["pane", "report-metadata"])
+            .with(pane_id)
+            .with("--source")
+            .with(SOURCE);
+        if let Some(title) = &update.title {
+            command = command.with("--title").with(title);
+        }
+        if let Some(display_agent) = &update.display_agent {
+            command = command.with("--display-agent").with(display_agent);
+        }
+        if let Some(custom_status) = &update.custom_status {
+            command = command.with("--custom-status").with(custom_status);
+        }
+        if let Some((status, label)) = &update.state_label {
+            command = command
+                .with("--state-label")
+                .with(format!("{status}={label}"));
+        }
+        if let Some(seq) = update.seq {
+            command = command.with("--seq").with(seq.to_string());
+        }
+        if let Some(ttl_ms) = update.ttl_ms {
+            command = command.with("--ttl-ms").with(ttl_ms.to_string());
+        }
+        self.invoke(&command.finish())?;
+        Ok(())
+    }
+
+    pub fn notification_show(
+        &self,
+        title: &str,
+        body: &str,
+        sound: &str,
+    ) -> Result<(), HerdrError> {
+        let args = args(["notification", "show"])
+            .with(title)
+            .with("--body")
+            .with(body)
+            .with("--sound")
+            .with(sound)
+            .finish();
+        self.invoke(&args)?;
+        Ok(())
     }
 
     fn invoke(&self, args: &[OsString]) -> Result<String, HerdrError> {

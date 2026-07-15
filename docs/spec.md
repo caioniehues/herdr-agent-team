@@ -193,12 +193,18 @@ feature.
    legacy `agent_id` projection for old run boards), plus the exact
    `HERDR_SOCKET_PATH` / `HERDR_SESSION` identity per run at spawn and adopt.
    Prerequisite for any real restart; restart logic remains out of scope.
-3. **Schema-gated metadata + aggregate notifications**: publish `team` /
-   `role` / `task` / `progress` via `pane report-metadata` tokens with
-   `--seq`/`--ttl-ms` — only after a runtime schema probe confirms token
-   support (preview surface, ADR-0010); `display_agent`/title fallback
-   otherwise. `notification show` for team-complete / blocked-beyond-
-   threshold / unrecoverable-exit only — never per status flip.
+3. **Schema-gated metadata + aggregate notifications — SHIPPED (#6,
+   2026-07-15)**: the runtime probe maps the team facts to the installed
+   `pane report-metadata` surface: compact `team/role` in `custom_status`,
+   task (when available) in `title`, and a status label. It uses a stable
+   plugin `--source` and monotonic per-worker `--seq`; explicit attention
+   pings use `--ttl-ms`. `herdr api schema --json` is cached per run before the
+   first write: absent custom tokens fall back to `display_agent`/title.
+   `notification show` is once per aggregate team-complete, blocked-duration,
+   unrecoverable-exit, or explicit needs-attention condition — never per
+   ordinary status flip. `HERDR_AGENT_TEAM_BLOCKED_THRESHOLD_MS` configures
+   the blocked-duration policy (default: five minutes; checked on subsequent
+   lifecycle/status events because this plugin has no daemon).
 4. **Native board pane**: `[[panes]]` entrypoint (durable tab placement +
    popup variant), `open-board` action, `plugin_action` keybinds, link
    handler making report/task pointers clickable. Board shows team
@@ -286,6 +292,17 @@ reference detail lives in `docs/research/` (ADR-0010 §3), not here.
   available `[source 2026-07-15]`. High-frequency kinds
   (`pane.output_changed`, `layout.updated`, …) are deliberately not
   plugin-hookable — direct subscription territory (ADR-0011).
+- **Metadata surface and coexistence**: `pane report-metadata` on installed
+  herdr 0.7.3 accepts `--title`, `--display-agent`, `--custom-status`,
+  `--state-label`, `--seq`, and `--ttl-ms` `[live 2026-07-15]`. A
+  plugin-scoped `--source caioniehues:herdr-agent-team` write on an active
+  Codex pane preserved its native `agent`/`agent_status` while adding only
+  presentation metadata `[live 2026-07-15]`; the plugin never calls
+  `pane report-agent`. The tested `--applies-to-source herdr:codex` filter
+  produced no visible update despite that pane's `agent_session.source`, so
+  the plugin deliberately omits that restrictive filter and relies on its
+  own stable source id. Schema absence still selects the fallback path
+  `[preview gate]`.
 
 ### Build-time verification TODOs (resolved)
 

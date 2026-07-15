@@ -11,6 +11,7 @@ pub mod agents_md;
 pub mod herdr;
 pub mod hook;
 pub mod launcher;
+pub mod metadata;
 pub mod msg;
 pub mod reconcile;
 pub mod run;
