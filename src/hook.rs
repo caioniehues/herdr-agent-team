@@ -133,7 +133,12 @@ pub fn on_agent_status<H: HerdrApi>(
                         MetadataFacts {
                             team: &run.state.spec.name,
                             role: &worker.role,
-                            task: None,
+                            task: run
+                                .state
+                                .workers
+                                .get(&worker_name)
+                                .and_then(|worker| worker.task.as_deref())
+                                .or(worker.task.as_deref()),
                             status: &status,
                             attention,
                         },
@@ -260,9 +265,30 @@ where
     F: FnMut(&str) -> Result<(), E>,
 {
     for path in queued_message_paths(run_dir, target)? {
-        let text = match std::fs::read_to_string(&path) {
+        // Atomically claim the message before consuming it. Concurrent hook
+        // invocations both list the same queued entry (defect #59); the rename
+        // winner owns delivery, and a loser's ENOENT means already-claimed —
+        // not a delivery failure — so it must skip silently.
+        let claimed = path.with_extension("claim");
+        if let Err(error) = std::fs::rename(&path, &claimed) {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                continue;
+            }
+            append_delivery_event(
+                run_dir,
+                "delivery_failed",
+                target,
+                &path,
+                Some(&error.to_string()),
+            )?;
+            break;
+        }
+
+        let text = match std::fs::read_to_string(&claimed) {
             Ok(text) => text,
             Err(error) => {
+                // Best-effort requeue so the message is retried on a later drain.
+                let _ = std::fs::rename(&claimed, &path);
                 append_delivery_event(
                     run_dir,
                     "delivery_failed",
@@ -275,6 +301,8 @@ where
         };
 
         if let Err(error) = deliver(&text) {
+            // Best-effort requeue so the message is retried on a later drain.
+            let _ = std::fs::rename(&claimed, &path);
             append_delivery_event(
                 run_dir,
                 "delivery_failed",
@@ -285,15 +313,19 @@ where
             break;
         }
 
-        if let Err(error) = std::fs::remove_file(&path) {
-            append_delivery_event(
-                run_dir,
-                "delivery_failed",
-                target,
-                &path,
-                Some(&error.to_string()),
-            )?;
-            break;
+        if let Err(error) = std::fs::remove_file(&claimed) {
+            // After a successful claim the file is exclusively ours: ENOENT
+            // here is already-consumed, never a delivery failure.
+            if error.kind() != std::io::ErrorKind::NotFound {
+                append_delivery_event(
+                    run_dir,
+                    "delivery_failed",
+                    target,
+                    &path,
+                    Some(&error.to_string()),
+                )?;
+                break;
+            }
         }
         append_delivery_event(run_dir, "delivered", target, &path, None)?;
     }
@@ -550,6 +582,89 @@ mod tests {
             .lines()
             .map(|line| serde_json::from_str(line).expect("parse durable event"))
             .collect()
+    }
+
+    #[test]
+    fn metadata_payload_includes_a_workers_task_when_titles_are_supported() {
+        #[derive(Default)]
+        struct MetadataHerdr {
+            update: std::cell::RefCell<Option<crate::metadata::MetadataUpdate>>,
+        }
+
+        impl HerdrApi for MetadataHerdr {
+            fn api_schema(&self) -> Result<String, crate::herdr::HerdrError> {
+                Ok(r#"{"schemas":{"request":{"$defs":{"PaneReportMetadataParams":{"properties":{"pane_id":{},"source":{},"title":{}}}}}}}"#.to_owned())
+            }
+
+            fn pane_report_metadata(
+                &self,
+                _: &str,
+                update: &crate::metadata::MetadataUpdate,
+            ) -> Result<(), crate::herdr::HerdrError> {
+                *self.update.borrow_mut() = Some(update.clone());
+                Ok(())
+            }
+        }
+
+        let temp = TempDir::new();
+        let mut run = fixture_run(temp.path(), "worker-pane");
+        run.state.workers.get_mut("builder").unwrap().task = Some("ship hook seam".to_owned());
+        run::save_run(&run).expect("persist worker task");
+        let herdr = MetadataHerdr::default();
+
+        on_agent_status(
+            &event("worker-pane", "working").to_string(),
+            temp.path(),
+            &herdr,
+        )
+        .expect("publish worker metadata");
+
+        assert_eq!(
+            herdr.update.borrow().as_ref().unwrap().title.as_deref(),
+            Some("ship hook seam")
+        );
+    }
+
+    #[test]
+    fn duplicate_drains_never_record_delivery_failed_after_delivered() {
+        let temp = TempDir::new();
+        let run = fixture_run(temp.path(), "worker-pane");
+        queue_message(&run, 1, "queued once");
+        let mut deliveries = Vec::new();
+
+        // Simulate the twice-reproduced live race (defect #59): a second hook
+        // invocation drains the same outbox entry while the first is mid-flight.
+        drain_outbox(&run.dir, "builder", |text| {
+            drain_outbox(&run.dir, "builder", |text| {
+                deliveries.push(text.to_owned());
+                Ok::<(), std::convert::Infallible>(())
+            })
+            .expect("concurrent duplicate drain");
+            deliveries.push(text.to_owned());
+            Ok::<(), std::convert::Infallible>(())
+        })
+        .expect("original drain");
+
+        assert_eq!(
+            deliveries,
+            ["queued once"],
+            "the message must be delivered exactly once"
+        );
+        let events = read_events(&run);
+        assert!(
+            !events
+                .iter()
+                .any(|event| event["event"] == "delivery_failed"),
+            "ENOENT after a successful claim is already-delivered, not a failure: {events:?}"
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event["event"] == "delivered")
+                .count(),
+            1,
+            "exactly one delivered event: {events:?}"
+        );
     }
 
     #[test]
