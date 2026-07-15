@@ -11,6 +11,14 @@
 - Workspace: `workspace-builder`
 - Working directory: `/repo/worktrees/builder`
 
+## Git contract
+
+This worker has a dedicated worktree on branch `feat/builder`.
+
+- Run git for this task: make small conventional commits on this branch, push it, and open a PR with `gh`.
+- Never touch the main/default branch, merge, or tag.
+- The coordinator reviews, runs gates centrally, and merges.
+
 ## Report protocol
 
 Before you become idle, blocked, or done:

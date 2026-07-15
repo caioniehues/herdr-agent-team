@@ -82,6 +82,12 @@ queues_midturn = true                # mid-turn pane run queues cleanly (live-ve
 `AGENTS.md`; it does not control the generated worker protocol. Every worker
 receives an explicit absolute-path pointer to its own protocol.
 
+The generated protocol's Git contract follows the worker's `worktree` flag.
+Worktree workers commit only on their configured branch, push it, and open a
+PR with `gh`; they never touch the main/default branch, merge, or tag. Shared-
+tree workers do not run Git: the coordinator owns Git operations, central
+gates, and merges.
+
 `queues_midturn` records whether a mid-turn `pane run` into this agent's TUI
 queues safely as a pending user message (verified for claude, spec §9).
 `false`/absent means the `msg` verb (§11) must not deliver while the target is
@@ -418,6 +424,9 @@ herdr-agent-team adopt <pane-id> --name <worker> [--role <text>]
 - **Topology:** star-only. Adopting into a mesh run is a hard error
   (immutable peer tables would go stale — ADR-0009 defers the amendment
   mechanism).
+- **Git:** adopted workers are shared-tree workers (`worktree = false`), so
+  their generated protocol keeps the no-Git rule; the coordinator owns Git
+  operations for the adopted pane's working tree.
 - **Agent kind:** from the pane's detected agent label, mapped into the
   launcher table. Unknown label → conservative synthetic policy
   (`submit_verify = true`, `queues_midturn = false`) + warning naming the

@@ -764,6 +764,9 @@ mod tests {
             .expect("read immutable adopted protocol");
         assert!(protocol.contains("- Worker: `newcomer`"));
         assert!(protocol.contains("- Workspace: `workspace-borrowed`"));
+        assert!(protocol.contains("This worker shares the coordinator's working tree."));
+        assert!(protocol.contains("Do not run git. The coordinator owns all git operations."));
+        assert!(!protocol.contains("open a PR with `gh`"));
         let calls = fake.calls();
         assert_eq!(calls[0], "pane_get:pane-adopted");
         assert!(calls.iter().any(|call| {

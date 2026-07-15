@@ -67,6 +67,8 @@ protocol, not the repository's authored `AGENTS.md`.\n\n",
     writeln!(out, "- Working directory: `{}`\n", cwd.display())
         .expect("writing to String cannot fail");
 
+    render_git_contract(&mut out, worker);
+
     out.push_str("## Report protocol\n\n");
     out.push_str("Before you become idle, blocked, or done:\n\n");
     writeln!(
@@ -107,6 +109,32 @@ fn workspace_label(state: Option<&WorkerRunState>) -> String {
     state
         .and_then(|state| state.workspace_id.clone())
         .unwrap_or_else(|| "pending".to_owned())
+}
+
+fn render_git_contract(out: &mut String, worker: &WorkerSpec) {
+    out.push_str("## Git contract\n\n");
+
+    if worker.worktree {
+        let branch = worker
+            .branch
+            .as_deref()
+            .expect("validated worktree workers always have a branch");
+        writeln!(
+            out,
+            "This worker has a dedicated worktree on branch `{branch}`.\n"
+        )
+        .expect("writing to String cannot fail");
+        out.push_str(
+            "- Run git for this task: make small conventional commits on this branch, push it, and open a PR with `gh`.\n\
+- Never touch the main/default branch, merge, or tag.\n\
+- The coordinator reviews, runs gates centrally, and merges.\n\n",
+        );
+    } else {
+        out.push_str(
+            "This worker shares the coordinator's working tree.\n\n\
+- Do not run git. The coordinator owns all git operations.\n\n",
+        );
+    }
 }
 
 fn render_mesh_protocol(
@@ -271,6 +299,23 @@ mod tests {
         .iter()
         .all(|forbidden| !rendered.contains(forbidden)));
         assert_no_bare_msg_invocation(&rendered);
+    }
+
+    #[test]
+    fn shared_tree_worker_protocol_keeps_git_with_the_coordinator() {
+        let (team, run) = fixture(Topology::Star);
+        let rendered = render_agents_md_with_executable(
+            &team,
+            &team.workers[1],
+            &run,
+            Path::new(GOLDEN_RUN_DIR),
+            Path::new(GOLDEN_EXECUTABLE),
+        )
+        .unwrap();
+
+        assert!(rendered.contains("This worker shares the coordinator's working tree."));
+        assert!(rendered.contains("Do not run git. The coordinator owns all git operations."));
+        assert!(!rendered.contains("open a PR with `gh`"));
     }
 
     #[test]
