@@ -129,6 +129,7 @@ pub struct SocketClient<C = HerdrClient> {
     fallback: C,
     max_frame_bytes: usize,
     io_timeout: Duration,
+    trace_path: Option<PathBuf>,
     next_id: std::sync::Arc<AtomicU64>,
     handshake: Handshake,
 }
@@ -155,6 +156,7 @@ impl<C: HerdrApi> SocketClient<C> {
             fallback,
             max_frame_bytes: DEFAULT_MAX_FRAME_BYTES,
             io_timeout: DEFAULT_IO_TIMEOUT,
+            trace_path: std::env::var_os(TRACE_ENV).map(PathBuf::from),
             next_id: Default::default(),
             handshake: Handshake {
                 version: String::new(),
@@ -315,7 +317,7 @@ impl<C: HerdrApi> SocketClient<C> {
         let envelope = read_envelope(&mut BufReader::new(stream), self.max_frame_bytes, method)?;
         check_id(&id, &envelope.id, method)?;
         let outcome = result_or_error(envelope, method);
-        trace(
+        self.trace(
             method,
             &id,
             outcome.as_ref().ok(),
@@ -348,27 +350,72 @@ impl<C: HerdrApi> SocketClient<C> {
         subscriptions: &[Value],
         timeout: Duration,
     ) -> Result<BufReader<UnixStream>, HerdrError> {
+        let started = Instant::now();
         let id = self.request_id();
-        let mut stream = self.open_stream(timeout)?;
-        write_request(
-            &mut stream,
-            &Request {
-                id: &id,
-                method: "events.subscribe",
-                params: json!({"subscriptions": subscriptions}),
-            },
-        )?;
-        let mut reader = BufReader::new(stream);
-        let ack = read_envelope(&mut reader, self.max_frame_bytes, "events.subscribe")?;
-        check_id(&id, &ack.id, "events.subscribe")?;
-        let value = result_or_error(ack, "events.subscribe")?;
-        #[derive(Deserialize)]
-        #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-        enum Ack {
-            SubscriptionStarted {},
+        let outcome = (|| {
+            let mut stream = self.open_stream(timeout)?;
+            write_request(
+                &mut stream,
+                &Request {
+                    id: &id,
+                    method: "events.subscribe",
+                    params: json!({"subscriptions": subscriptions}),
+                },
+            )?;
+            let mut reader = BufReader::new(stream);
+            let ack = read_envelope(&mut reader, self.max_frame_bytes, "events.subscribe")?;
+            check_id(&id, &ack.id, "events.subscribe")?;
+            let value = result_or_error(ack, "events.subscribe")?;
+            #[derive(Deserialize)]
+            #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+            enum Ack {
+                SubscriptionStarted {},
+            }
+            serde_json::from_value::<Ack>(value.clone())
+                .map_err(|e| invalid("events.subscribe ack", e))?;
+            Ok((reader, value))
+        })();
+        match outcome {
+            Ok((reader, value)) => {
+                self.trace(
+                    "events.subscribe",
+                    &id,
+                    Some(&value),
+                    None,
+                    started.elapsed(),
+                );
+                Ok(reader)
+            }
+            Err(error) => {
+                self.trace(
+                    "events.subscribe",
+                    &id,
+                    None,
+                    Some(&error),
+                    started.elapsed(),
+                );
+                Err(error)
+            }
         }
-        serde_json::from_value::<Ack>(value).map_err(|e| invalid("events.subscribe ack", e))?;
-        Ok(reader)
+    }
+
+    fn trace(
+        &self,
+        method: &str,
+        id: &str,
+        result: Option<&Value>,
+        error: Option<&HerdrError>,
+        elapsed: Duration,
+    ) {
+        let Some(path) = self.trace_path.as_deref() else {
+            return;
+        };
+        let result_type = result
+            .and_then(|value| value.get("type"))
+            .and_then(Value::as_str);
+        let error_code = error.map(|_| "transport_or_protocol_error");
+        let row = json!({"id":id,"method":method,"result_type":result_type,"error_code":error_code,"latency_ms":elapsed.as_millis()});
+        write_trace(path, &row);
     }
 }
 
@@ -511,21 +558,6 @@ fn validate_runtime_schema(runtime: &str) -> Result<(), HerdrError> {
         ));
     }
     Ok(())
-}
-fn trace(
-    method: &str,
-    id: &str,
-    result: Option<&Value>,
-    error: Option<&HerdrError>,
-    elapsed: Duration,
-) {
-    let Some(path) = std::env::var_os(TRACE_ENV) else {
-        return;
-    };
-    let result_type = result.and_then(|v| v.get("type")).and_then(Value::as_str);
-    let error_code = error.map(|_| "transport_or_protocol_error");
-    let row = json!({"id":id,"method":method,"result_type":result_type,"error_code":error_code,"latency_ms":elapsed.as_millis()});
-    write_trace(Path::new(&path), &row);
 }
 fn write_trace(path: &Path, row: &Value) {
     if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(path) {
@@ -1201,5 +1233,56 @@ mod tests {
         );
         assert_eq!(source.matches("snapshot_pending").count(), 0);
         assert!(!source.contains("struct CollectorSocketState"));
+    }
+
+    #[test]
+    fn subscription_ack_and_error_are_traced_without_server_text() {
+        let trace_path =
+            std::env::temp_dir().join(format!("hat-subscription-trace-{}.jsonl", rand_id()));
+        let success =
+            "{\"id\":\"herdr-agent-team:1\",\"result\":{\"type\":\"subscription_started\"}}\n";
+        let (path, h) = fake(vec![pong("herdr-agent-team:0", 16), success.into()]);
+        let mut client =
+            SocketClient::connect_validated(path.clone(), FakeHerdr::default()).unwrap();
+        client.trace_path = Some(trace_path.clone());
+        drop(
+            client
+                .subscribe(
+                    &[json!({"type":"pane.agent_status_changed","pane_id":"p1"})],
+                    Duration::from_millis(20),
+                )
+                .unwrap(),
+        );
+        h.join().unwrap();
+        let _ = fs::remove_file(path);
+
+        let failure="{\"id\":\"herdr-agent-team:1\",\"error\":{\"code\":\"denied\",\"message\":\"SECRET prompt contents\"}}\n";
+        let (path, h) = fake(vec![pong("herdr-agent-team:0", 16), failure.into()]);
+        let mut client =
+            SocketClient::connect_validated(path.clone(), FakeHerdr::default()).unwrap();
+        client.trace_path = Some(trace_path.clone());
+        assert!(client
+            .subscribe(
+                &[json!({"type":"pane.agent_status_changed","pane_id":"p1"})],
+                Duration::from_millis(20)
+            )
+            .is_err());
+        h.join().unwrap();
+        let _ = fs::remove_file(path);
+        let rows = fs::read_to_string(&trace_path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .filter(|row| row["method"] == "events.subscribe")
+            .collect::<Vec<_>>();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0]["result_type"], "subscription_started");
+        assert!(rows[0]["error_code"].is_null());
+        assert_eq!(rows[1]["error_code"], "transport_or_protocol_error");
+        assert!(rows[1]["result_type"].is_null());
+        let contents = fs::read_to_string(&trace_path).unwrap();
+        assert!(!contents.contains("SECRET"));
+        assert!(!contents.contains("prompt contents"));
+        let _ = fs::remove_file(trace_path);
     }
 }
