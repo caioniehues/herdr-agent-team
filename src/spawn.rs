@@ -1,7 +1,7 @@
 //! Team preflight and worker launch flow from `docs/spec.md` section 4.
 
 use crate::agents_md::{render_agents_md, AgentsMdError};
-use crate::herdr::{HerdrClient, HerdrError, PaneInfo, WaitOutcome, WorkspaceRef};
+use crate::herdr::{HerdrClient, HerdrError, PaneInfo, WaitOutcome, WorkspaceRef, WorktreeRef};
 use crate::launcher::{default_launcher_table, launcher_entry, load_launcher_table, LauncherError};
 use crate::run::{create_run, save_run, RunBoard, RunError};
 use crate::spec::{
@@ -17,6 +17,7 @@ use std::env;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::thread;
 use std::time::{Duration, Instant};
 use thiserror::Error;
@@ -63,10 +64,25 @@ pub enum SpawnError {
     UnsafeWorkerName { worker: String },
     #[error("worker '{worker}' agent CLI is not executable on PATH: {command}")]
     AgentCliMissing { worker: String, command: String },
+    #[error("worker '{worker}' failed to start setup command `{command}` in `{cwd}`: {source}")]
+    SetupSpawn {
+        worker: String,
+        command: String,
+        cwd: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
     #[error(
-        "worker '{worker}' requests a worktree; worktree workers are not implemented (ticket 10)"
+        "worker '{worker}' setup command `{command}` failed in `{cwd}` with status {status:?}; stdout:\n{stdout}\nstderr:\n{stderr}"
     )]
-    WorktreeNotImplemented { worker: String },
+    SetupFailed {
+        worker: String,
+        command: String,
+        cwd: PathBuf,
+        status: Option<i32>,
+        stdout: Box<str>,
+        stderr: Box<str>,
+    },
     #[error("failed to {action} `{path}`: {source}")]
     Io {
         action: &'static str,
@@ -108,6 +124,7 @@ struct SpawnContext {
 
 trait HerdrApi {
     fn health_check(&self) -> Result<(), HerdrError>;
+    fn worktree_create(&self, repo: &Path, branch: &str) -> Result<WorktreeRef, HerdrError>;
     fn workspace_create(&self, cwd: &Path, label: &str) -> Result<WorkspaceRef, HerdrError>;
     fn pane_run(&self, pane_id: &str, input: &str) -> Result<(), HerdrError>;
     fn agent_wait(
@@ -122,6 +139,10 @@ trait HerdrApi {
 impl HerdrApi for HerdrClient {
     fn health_check(&self) -> Result<(), HerdrError> {
         self.agent_list().map(|_| ())
+    }
+
+    fn worktree_create(&self, repo: &Path, branch: &str) -> Result<WorktreeRef, HerdrError> {
+        HerdrClient::worktree_create(self, repo, branch)
     }
 
     fn workspace_create(&self, cwd: &Path, label: &str) -> Result<WorkspaceRef, HerdrError> {
@@ -143,6 +164,36 @@ impl HerdrApi for HerdrClient {
 
     fn pane_get(&self, pane_id: &str) -> Result<PaneInfo, HerdrError> {
         self.pane_get(pane_id)
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct SetupOutput {
+    success: bool,
+    status: Option<i32>,
+    stdout: String,
+    stderr: String,
+}
+
+trait SetupRunner {
+    fn run(&self, cwd: &Path, command: &str) -> Result<SetupOutput, std::io::Error>;
+}
+
+struct ProcessSetupRunner;
+
+impl SetupRunner for ProcessSetupRunner {
+    fn run(&self, cwd: &Path, command: &str) -> Result<SetupOutput, std::io::Error> {
+        let output = Command::new("sh")
+            .arg("-c")
+            .arg(command)
+            .current_dir(cwd)
+            .output()?;
+        Ok(SetupOutput {
+            success: output.status.success(),
+            status: output.status.code(),
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        })
     }
 }
 
@@ -309,7 +360,33 @@ where
     H: HerdrApi,
     F: Fn(&str) -> bool,
 {
-    preflight(&spec, launchers, herdr, &command_available)?;
+    spawn_resolved_with_setup(
+        spec,
+        launchers,
+        state_dir,
+        god_pane_id,
+        herdr,
+        &command_available,
+        &ProcessSetupRunner,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn spawn_resolved_with_setup<H, F, S>(
+    spec: TeamSpec,
+    launchers: &LauncherTable,
+    state_dir: &Path,
+    god_pane_id: String,
+    herdr: &H,
+    command_available: &F,
+    setup_runner: &S,
+) -> Result<RunBoard, SpawnError>
+where
+    H: HerdrApi,
+    F: Fn(&str) -> bool,
+    S: SetupRunner,
+{
+    preflight(&spec, launchers, herdr, command_available)?;
 
     let workers = spec
         .workers
@@ -338,7 +415,8 @@ where
     // Allocate every workspace first so immutable mesh protocols can contain
     // the complete set of opaque live workspace IDs.
     for worker in &spec.workers {
-        if let Err(error) = allocate_worker_workspace(&spec, worker, &mut run, herdr) {
+        if let Err(error) = allocate_worker_workspace(&spec, worker, &mut run, herdr, setup_runner)
+        {
             if let Some(worker_state) = run.state.workers.get_mut(&worker.name) {
                 worker_state.lifecycle = WorkerLifecycle::Failed;
             }
@@ -394,11 +472,6 @@ where
                 worker: worker.name.clone(),
             });
         }
-        if worker.worktree {
-            return Err(SpawnError::WorktreeNotImplemented {
-                worker: worker.name.clone(),
-            });
-        }
         if !worker.brief.is_file() {
             return Err(SpawnError::Brief {
                 worker: worker.name.clone(),
@@ -435,14 +508,16 @@ fn is_safe_worker_filename(name: &str) -> bool {
         && !name.contains('\\')
 }
 
-fn allocate_worker_workspace<H: HerdrApi>(
+fn allocate_worker_workspace<H: HerdrApi, S: SetupRunner>(
     spec: &TeamSpec,
     worker: &WorkerSpec,
     run: &mut RunBoard,
     herdr: &H,
+    setup_runner: &S,
 ) -> Result<(), SpawnError> {
+    let cwd = prepare_worker_cwd(spec, worker, run, herdr, setup_runner)?;
     let workspace = herdr
-        .workspace_create(&spec.cwd, &worker.name)
+        .workspace_create(&cwd, &worker.name)
         .map_err(|source| worker_herdr(worker, "workspace create", source))?;
     {
         let state = run
@@ -454,6 +529,64 @@ fn allocate_worker_workspace<H: HerdrApi>(
         state.pane_id = Some(workspace.pane_id.clone());
     }
     save_run(run)?;
+    Ok(())
+}
+
+fn prepare_worker_cwd<H: HerdrApi, S: SetupRunner>(
+    spec: &TeamSpec,
+    worker: &WorkerSpec,
+    run: &mut RunBoard,
+    herdr: &H,
+    setup_runner: &S,
+) -> Result<PathBuf, SpawnError> {
+    if !worker.worktree {
+        return Ok(spec.cwd.clone());
+    }
+
+    let branch = worker
+        .branch
+        .as_deref()
+        .expect("validated worktree workers always have a branch");
+    let worktree = herdr
+        .worktree_create(&spec.cwd, branch)
+        .map_err(|source| worker_herdr(worker, "worktree create", source))?;
+    run.state
+        .workers
+        .get_mut(&worker.name)
+        .expect("run state is initialized from the same team spec")
+        .worktree_path = Some(worktree.path.clone());
+    save_run(run)?;
+
+    run_setup_commands(worker, &worktree.path, &spec.setup, setup_runner)?;
+    Ok(worktree.path)
+}
+
+fn run_setup_commands<S: SetupRunner>(
+    worker: &WorkerSpec,
+    cwd: &Path,
+    commands: &[String],
+    setup_runner: &S,
+) -> Result<(), SpawnError> {
+    for command in commands {
+        let output = setup_runner
+            .run(cwd, command)
+            .map_err(|source| SpawnError::SetupSpawn {
+                worker: worker.name.clone(),
+                command: command.clone(),
+                cwd: cwd.to_path_buf(),
+                source,
+            })?;
+        if !output.success {
+            return Err(SpawnError::SetupFailed {
+                worker: worker.name.clone(),
+                command: command.clone(),
+                cwd: cwd.to_path_buf(),
+                status: output.status,
+                stdout: output.stdout.into_boxed_str(),
+                stderr: output.stderr.into_boxed_str(),
+            });
+        }
+    }
     Ok(())
 }
 
@@ -778,9 +911,11 @@ mod tests {
     struct FakeHerdr {
         calls: RefCell<Vec<String>>,
         workspace_count: Cell<usize>,
+        worktree_count: Cell<usize>,
         protocols_state_dir: RefCell<Option<PathBuf>>,
         protocol_snapshots: RefCell<Vec<BTreeMap<PathBuf, String>>>,
         fail_launch_pane: RefCell<Option<String>>,
+        fail_worktree_branch: RefCell<Option<String>>,
         fail_health: Cell<bool>,
         omit_agent_id: Cell<bool>,
         wait_timeouts: Cell<usize>,
@@ -814,6 +949,20 @@ mod tests {
                 return Err(Self::command_error());
             }
             Ok(())
+        }
+
+        fn worktree_create(&self, repo: &Path, branch: &str) -> Result<WorktreeRef, HerdrError> {
+            self.calls
+                .borrow_mut()
+                .push(format!("worktree_create:{branch}:{}", repo.display()));
+            if self.fail_worktree_branch.borrow().as_deref() == Some(branch) {
+                return Err(Self::command_error());
+            }
+            let number = self.worktree_count.get() + 1;
+            self.worktree_count.set(number);
+            Ok(WorktreeRef {
+                path: repo.join(format!("worktree-{number}")),
+            })
         }
 
         fn workspace_create(&self, cwd: &Path, label: &str) -> Result<WorkspaceRef, HerdrError> {
@@ -893,8 +1042,60 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct FakeSetupRunner {
+        calls: RefCell<Vec<String>>,
+        failure: RefCell<Option<(String, SetupOutput)>>,
+    }
+
+    impl FakeSetupRunner {
+        fn fail(&self, command: &str, status: i32, stdout: &str, stderr: &str) {
+            *self.failure.borrow_mut() = Some((
+                command.to_owned(),
+                SetupOutput {
+                    success: false,
+                    status: Some(status),
+                    stdout: stdout.to_owned(),
+                    stderr: stderr.to_owned(),
+                },
+            ));
+        }
+
+        fn calls(&self) -> Vec<String> {
+            self.calls.borrow().clone()
+        }
+    }
+
+    impl SetupRunner for FakeSetupRunner {
+        fn run(&self, cwd: &Path, command: &str) -> Result<SetupOutput, std::io::Error> {
+            self.calls
+                .borrow_mut()
+                .push(format!("setup:{command}:{}", cwd.display()));
+            if let Some((failed_command, output)) = self.failure.borrow().as_ref() {
+                if failed_command == command {
+                    return Ok(SetupOutput {
+                        success: output.success,
+                        status: output.status,
+                        stdout: output.stdout.clone(),
+                        stderr: output.stderr.clone(),
+                    });
+                }
+            }
+            Ok(SetupOutput {
+                success: true,
+                status: Some(0),
+                stdout: String::new(),
+                stderr: String::new(),
+            })
+        }
+    }
+
     fn launchers() -> LauncherTable {
         default_launcher_table()
+    }
+
+    fn command_is_available(_: &str) -> bool {
+        true
     }
 
     fn worker(root: &Path, name: &str, agent: &str) -> WorkerSpec {
@@ -987,28 +1188,176 @@ mod tests {
     }
 
     #[test]
-    fn worktree_worker_is_explicitly_deferred_before_mutation() {
+    fn worktree_workers_are_prepared_before_launch_with_persisted_path_and_cwd() {
         let temp = TempDir::new();
+        let state_dir = temp.path().join("state");
         let fake = FakeHerdr::default();
+        let setup = FakeSetupRunner::default();
+        let mut builder = worker(temp.path(), "builder", "claude");
+        builder.role = "builder".to_owned();
+        builder.worktree = true;
+        builder.branch = Some("feat/builder".to_owned());
+        let reviewer = worker(temp.path(), "reviewer", "codex");
+        let mut spec = team(temp.path(), vec![builder, reviewer]);
+        spec.setup = vec!["./setup-one".to_owned(), "./setup-two --flag".to_owned()];
+
+        let run = spawn_resolved_with_setup(
+            spec,
+            &launchers(),
+            &state_dir,
+            "god-pane".to_owned(),
+            &fake,
+            &command_is_available,
+            &setup,
+        )
+        .expect("spawn mixed-cwd workers");
+
+        let worktree_path = temp.path().join("worktree-1");
+        let persisted = load_run(&run.dir).expect("load persisted worktree run");
+        assert_eq!(
+            persisted.state.workers["builder"].worktree_path.as_deref(),
+            Some(worktree_path.as_path())
+        );
+        assert_eq!(persisted.state.workers["reviewer"].worktree_path, None);
+        assert_eq!(
+            setup.calls(),
+            [
+                format!("setup:./setup-one:{}", worktree_path.display()),
+                format!("setup:./setup-two --flag:{}", worktree_path.display()),
+            ]
+        );
+
+        let calls = fake.calls();
+        assert!(calls.contains(&format!(
+            "worktree_create:feat/builder:{}",
+            temp.path().display()
+        )));
+        assert!(calls.contains(&format!(
+            "workspace_create:builder:{}",
+            worktree_path.display()
+        )));
+        assert!(calls.contains(&format!(
+            "workspace_create:reviewer:{}",
+            temp.path().display()
+        )));
+        let last_allocation = calls
+            .iter()
+            .rposition(|call| call.starts_with("workspace_create:"))
+            .expect("workspace allocation call");
+        let first_launch = calls
+            .iter()
+            .position(|call| call.starts_with("pane_run:"))
+            .expect("agent launch call");
+        assert!(
+            last_allocation < first_launch,
+            "all workers must be allocated before any agent launch: {calls:?}"
+        );
+    }
+
+    #[test]
+    fn setup_failure_captures_output_and_aborts_before_workspace_or_launch() {
+        let temp = TempDir::new();
+        let state_dir = temp.path().join("state");
+        let fake = FakeHerdr::default();
+        let setup = FakeSetupRunner::default();
+        setup.fail("./prepare", 23, "setup stdout\n", "setup stderr\n");
+        let mut builder = worker(temp.path(), "builder", "claude");
+        builder.role = "builder".to_owned();
+        builder.worktree = true;
+        builder.branch = Some("feat/builder".to_owned());
+        let mut spec = team(temp.path(), vec![builder]);
+        spec.setup = vec!["./prepare".to_owned()];
+
+        let error = spawn_resolved_with_setup(
+            spec,
+            &launchers(),
+            &state_dir,
+            "god-pane".to_owned(),
+            &fake,
+            &command_is_available,
+            &setup,
+        )
+        .expect_err("failed setup must abort allocation")
+        .to_string();
+
+        assert!(error.contains("worker 'builder'"));
+        assert!(error.contains("./prepare"));
+        assert!(error.contains("status Some(23)"));
+        assert!(error.contains("setup stdout"));
+        assert!(error.contains("setup stderr"));
+        assert!(!fake
+            .calls()
+            .iter()
+            .any(|call| call.starts_with("workspace_create:") || call.starts_with("pane_run:")));
+
+        let run = load_run(&only_run_dir(&state_dir)).expect("load failed setup run");
+        assert_eq!(
+            run.state.workers["builder"].worktree_path.as_deref(),
+            Some(temp.path().join("worktree-1").as_path())
+        );
+        assert_eq!(
+            run.state.workers["builder"].lifecycle,
+            WorkerLifecycle::Failed
+        );
+    }
+
+    #[test]
+    fn process_setup_runner_uses_worktree_cwd_and_captures_both_streams() {
+        let temp = TempDir::new();
+
+        let output = ProcessSetupRunner
+            .run(
+                temp.path(),
+                "printf 'stdout:%s' \"$PWD\"; printf 'stderr:evidence' >&2; exit 19",
+            )
+            .expect("run setup process");
+
+        assert!(!output.success);
+        assert_eq!(output.status, Some(19));
+        assert_eq!(output.stdout, format!("stdout:{}", temp.path().display()));
+        assert_eq!(output.stderr, "stderr:evidence");
+    }
+
+    #[test]
+    fn worktree_create_failure_names_worker_and_prevents_all_agent_launches() {
+        let temp = TempDir::new();
+        let state_dir = temp.path().join("state");
+        let fake = FakeHerdr::default();
+        *fake.fail_worktree_branch.borrow_mut() = Some("feat/builder".to_owned());
+        let setup = FakeSetupRunner::default();
+        let reviewer = worker(temp.path(), "reviewer", "codex");
         let mut builder = worker(temp.path(), "builder", "claude");
         builder.role = "builder".to_owned();
         builder.worktree = true;
         builder.branch = Some("feat/builder".to_owned());
 
-        let error = spawn_resolved(
-            team(temp.path(), vec![builder]),
+        let error = spawn_resolved_with_setup(
+            team(temp.path(), vec![reviewer, builder]),
             &launchers(),
-            &temp.path().join("state"),
+            &state_dir,
             "god-pane".to_owned(),
             &fake,
-            |_| true,
+            &command_is_available,
+            &setup,
         )
-        .expect_err("ticket 10 worker must fail")
+        .expect_err("worktree creation must fail allocation")
         .to_string();
 
         assert!(error.contains("worker 'builder'"));
-        assert!(error.contains("ticket 10"));
-        assert!(fake.calls().is_empty());
+        assert!(error.contains("worktree create"));
+        assert!(!fake
+            .calls()
+            .iter()
+            .any(|call| call.starts_with("pane_run:")));
+        let run = load_run(&only_run_dir(&state_dir)).expect("load failed worktree run");
+        assert_eq!(
+            run.state.workers["reviewer"].workspace_id.as_deref(),
+            Some("workspace-1")
+        );
+        assert_eq!(
+            run.state.workers["builder"].lifecycle,
+            WorkerLifecycle::Failed
+        );
     }
 
     #[test]
