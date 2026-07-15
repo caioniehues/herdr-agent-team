@@ -305,6 +305,7 @@ mod tests {
                 agent_session: None,
                 worktree_path: Some(PathBuf::from("/tmp/worktree")),
                 adopted: false,
+                launch_checkpoint: Default::default(),
                 lifecycle: WorkerLifecycle::Running,
             },
         );

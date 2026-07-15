@@ -665,6 +665,7 @@ mod tests {
             agent_session: None,
             worktree_path: Some(worktree_root.join(worktree)),
             adopted: false,
+            launch_checkpoint: Default::default(),
             lifecycle: WorkerLifecycle::Running,
         };
 

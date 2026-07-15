@@ -481,8 +481,34 @@ impl HerdrApi for HerdrClient {
 #[cfg(test)]
 pub(crate) mod test_support {
     use super::*;
-    use std::cell::{Cell, RefCell};
-    use std::collections::{BTreeMap, VecDeque};
+    use std::collections::{BTreeMap, BTreeSet, VecDeque};
+    use std::sync::{Arc, Barrier, Mutex, MutexGuard};
+
+    #[derive(Default)]
+    pub(crate) struct SyncCell<T>(Mutex<T>);
+
+    impl<T: Copy> SyncCell<T> {
+        pub fn get(&self) -> T {
+            *self.0.lock().expect("fake cell lock")
+        }
+
+        pub fn set(&self, value: T) {
+            *self.0.lock().expect("fake cell lock") = value;
+        }
+    }
+
+    #[derive(Default)]
+    pub(crate) struct SyncRefCell<T>(Mutex<T>);
+
+    impl<T> SyncRefCell<T> {
+        pub fn borrow(&self) -> MutexGuard<'_, T> {
+            self.0.lock().expect("fake refcell lock")
+        }
+
+        pub fn borrow_mut(&self) -> MutexGuard<'_, T> {
+            self.0.lock().expect("fake refcell lock")
+        }
+    }
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub(crate) enum FakeCall {
@@ -494,24 +520,26 @@ pub(crate) mod test_support {
 
     #[derive(Default)]
     pub(crate) struct FakeHerdr {
-        pub calls: RefCell<Vec<String>>,
-        pub typed_calls: RefCell<Vec<FakeCall>>,
-        pub workspace_count: Cell<usize>,
-        pub worktree_count: Cell<usize>,
-        pub protocols_state_dir: RefCell<Option<PathBuf>>,
-        pub protocol_snapshots: RefCell<Vec<BTreeMap<PathBuf, String>>>,
-        pub fail_launch_pane: RefCell<Option<String>>,
-        pub fail_worktree_branch: RefCell<Option<String>>,
-        pub fail_health: Cell<bool>,
-        pub omit_agent: Cell<bool>,
-        pub omit_agent_id: Cell<bool>,
-        pub wait_timeouts: Cell<usize>,
-        pub agent_id_delays: Cell<usize>,
-        pub require_empty_submit: Cell<bool>,
-        pub empty_submit_seen: Cell<bool>,
-        pub pane: RefCell<Option<PaneInfo>>,
-        pub agents: RefCell<Vec<AgentInfo>>,
-        pub waits: RefCell<VecDeque<WaitOutcome>>,
+        pub calls: SyncRefCell<Vec<String>>,
+        pub typed_calls: SyncRefCell<Vec<FakeCall>>,
+        pub workspace_count: SyncCell<usize>,
+        pub worktree_count: SyncCell<usize>,
+        pub protocols_state_dir: SyncRefCell<Option<PathBuf>>,
+        pub protocol_snapshots: SyncRefCell<Vec<BTreeMap<PathBuf, String>>>,
+        pub fail_launch_pane: SyncRefCell<Option<String>>,
+        pub fail_worktree_branch: SyncRefCell<Option<String>>,
+        pub missing_panes: SyncRefCell<BTreeSet<String>>,
+        pub launch_barrier: SyncRefCell<Option<Arc<Barrier>>>,
+        pub fail_health: SyncCell<bool>,
+        pub omit_agent: SyncCell<bool>,
+        pub omit_agent_id: SyncCell<bool>,
+        pub wait_timeouts: SyncCell<usize>,
+        pub agent_id_delays: SyncCell<usize>,
+        pub require_empty_submit: SyncCell<bool>,
+        pub empty_submit_seen: SyncCell<bool>,
+        pub pane: SyncRefCell<Option<PaneInfo>>,
+        pub agents: SyncRefCell<Vec<AgentInfo>>,
+        pub waits: SyncRefCell<VecDeque<WaitOutcome>>,
     }
 
     impl FakeHerdr {
@@ -606,6 +634,10 @@ pub(crate) mod test_support {
         fn pane_run(&self, pane_id: &str, input: &str) -> Result<(), HerdrError> {
             if input.starts_with('\'') {
                 self.snapshot_protocols();
+                let barrier = self.launch_barrier.borrow().clone();
+                if let Some(barrier) = barrier {
+                    barrier.wait();
+                }
             }
             self.calls
                 .borrow_mut()
@@ -658,6 +690,9 @@ pub(crate) mod test_support {
             self.typed_calls
                 .borrow_mut()
                 .push(FakeCall::PaneGet(pane_id.to_owned()));
+            if self.missing_panes.borrow().contains(pane_id) {
+                return Err(Self::command_error());
+            }
             if let Some(pane) = self.pane.borrow().clone() {
                 return Ok(pane);
             }

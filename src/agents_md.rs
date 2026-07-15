@@ -228,6 +228,7 @@ mod tests {
             agent_session: None,
             worktree_path: worktree_path.map(PathBuf::from),
             adopted: false,
+            launch_checkpoint: Default::default(),
             lifecycle: WorkerLifecycle::Running,
         };
         let run = RunState {

@@ -108,7 +108,19 @@ pub struct WorkerRunState {
     pub worktree_path: Option<PathBuf>,
     #[serde(default)]
     pub adopted: bool,
+    #[serde(default)]
+    pub launch_checkpoint: WorkerLaunchCheckpoint,
     pub lifecycle: WorkerLifecycle,
+}
+
+/// Durable progress through the spawn launch flow (spec section 4).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkerLaunchCheckpoint {
+    Pending,
+    ResourcesReady,
+    #[default]
+    BriefSubmitted,
 }
 
 /// The Herdr runtime selected when this run was created or adopted.

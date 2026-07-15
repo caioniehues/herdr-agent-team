@@ -459,6 +459,7 @@ fn insert_adopted_worker(state: &mut RunState, worker: &WorkerSpec, pane: &PaneI
             agent_session: pane.agent_session.clone(),
             worktree_path: None,
             adopted: true,
+            launch_checkpoint: crate::types::WorkerLaunchCheckpoint::Pending,
             lifecycle: WorkerLifecycle::Pending,
         },
     );
@@ -596,6 +597,7 @@ mod tests {
                         agent_session: None,
                         worktree_path: None,
                         adopted: false,
+                        launch_checkpoint: Default::default(),
                         lifecycle: WorkerLifecycle::Running,
                     },
                 )]),
