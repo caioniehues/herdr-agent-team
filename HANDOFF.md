@@ -39,7 +39,14 @@ Last updated 2026-07-15 (post research wave + docs overhaul).
 
 ## NEXT steps (in order)
 
-0. **v0.5.0 RELEASED 2026-07-15** (third release today): #6 schema-gated
+0. **v0.6.0 RELEASED 2026-07-15** (#7): native board pane = the human's
+   CONTROL DECK (variant-D prototype verdict; branch prototype/board-pane is
+   the primary source). `[[panes]] board` + open-board action + report: link
+   handler; real per-row verbs incl. NEW `kill <run> --worker <name>`;
+   optional worker `task` field; deps deferred. Collection behind
+   `BoardCollector` trait for #8's socket swap. 128 tests. Architecture
+   consolidation pass scoped next (HerdrApi seam, before #8).
+1. **v0.5.0 RELEASED 2026-07-15** (third release today): #6 schema-gated
    metadata tokens (`src/metadata.rs` maps team facts onto the REAL 0.7.3
    tokens — title/display_agent/custom_status/state_label; runtime
    `api schema --json` gate with fallback; probe results on issue #6) +
