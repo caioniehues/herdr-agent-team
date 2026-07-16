@@ -13,6 +13,7 @@ pub mod board;
 pub mod god_cli;
 pub mod herdr;
 pub mod hook;
+pub mod idmap;
 pub mod launcher;
 pub mod metadata;
 pub mod msg;
