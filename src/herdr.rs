@@ -197,6 +197,22 @@ pub trait HerdrApi {
     fn pane_rename(&self, _: &str, _: &str) -> Result<(), HerdrError> {
         Err(unsupported_api())
     }
+    /// `kill-pane -t %N` (issue #85 commit 6): close the pane outright.
+    fn pane_close(&self, _pane_id: &str) -> Result<(), HerdrError> {
+        Err(unsupported_api())
+    }
+    /// `resize-pane -t %N -x AMOUNT` (issue #85 commit 6): herdr models
+    /// resize as a directional border move, not tmux's absolute-size target,
+    /// so the shim maps it onto a fixed direction (see `teammux::resize_pane`
+    /// for the documented assumption) with `amount` as a 0-1 ratio.
+    fn pane_resize(
+        &self,
+        _pane_id: &str,
+        _direction: &str,
+        _amount: Option<f64>,
+    ) -> Result<(), HerdrError> {
+        Err(unsupported_api())
+    }
     fn agent_wait(&self, _: &str, _: &str, _: Duration) -> Result<WaitOutcome, HerdrError> {
         Err(unsupported_api())
     }
@@ -341,6 +357,31 @@ impl HerdrClient {
         parse_pane_info(&stdout)
             .map(|_| ())
             .map_err(|message| self.invalid_response(&args, message))
+    }
+
+    pub fn pane_close(&self, pane_id: &str) -> Result<(), HerdrError> {
+        let args = args(["pane", "close"]).with(pane_id).finish();
+        self.invoke(&args)?;
+        Ok(())
+    }
+
+    pub fn pane_resize(
+        &self,
+        pane_id: &str,
+        direction: &str,
+        amount: Option<f64>,
+    ) -> Result<(), HerdrError> {
+        let mut command = args(["pane", "resize"])
+            .with("--direction")
+            .with(direction)
+            .with("--pane")
+            .with(pane_id);
+        if let Some(amount) = amount {
+            command = command.with("--amount").with(amount.to_string());
+        }
+        let args = command.finish();
+        self.invoke(&args)?;
+        Ok(())
     }
 
     pub fn agent_wait(
@@ -512,6 +553,17 @@ impl HerdrApi for HerdrClient {
     fn pane_rename(&self, pane_id: &str, title: &str) -> Result<(), HerdrError> {
         Self::pane_rename(self, pane_id, title)
     }
+    fn pane_close(&self, pane_id: &str) -> Result<(), HerdrError> {
+        Self::pane_close(self, pane_id)
+    }
+    fn pane_resize(
+        &self,
+        pane_id: &str,
+        direction: &str,
+        amount: Option<f64>,
+    ) -> Result<(), HerdrError> {
+        Self::pane_resize(self, pane_id, direction, amount)
+    }
     fn agent_wait(
         &self,
         pane_id: &str,
@@ -606,6 +658,8 @@ pub(crate) mod test_support {
         AgentWait(String, String),
         Notification(String, String, String),
         PaneSplitPane(String, String),
+        PaneClose(String),
+        PaneResize(String, String, Option<String>),
     }
 
     #[derive(Default)]
@@ -632,6 +686,8 @@ pub(crate) mod test_support {
         pub panes: SyncRefCell<Vec<PaneInfo>>,
         pub split_result: SyncRefCell<Option<PaneInfo>>,
         pub fail_split: SyncCell<bool>,
+        pub fail_close: SyncCell<bool>,
+        pub fail_resize: SyncCell<bool>,
         pub agents: SyncRefCell<Vec<AgentInfo>>,
         pub waits: SyncRefCell<VecDeque<WaitOutcome>>,
     }
@@ -859,6 +915,43 @@ pub(crate) mod test_support {
                     cwd: None,
                 }),
             }
+        }
+        fn pane_rename(&self, pane_id: &str, title: &str) -> Result<(), HerdrError> {
+            self.calls
+                .borrow_mut()
+                .push(format!("pane_rename:{pane_id}:{title}"));
+            Ok(())
+        }
+        fn pane_close(&self, pane_id: &str) -> Result<(), HerdrError> {
+            self.calls
+                .borrow_mut()
+                .push(format!("pane_close:{pane_id}"));
+            self.typed_calls
+                .borrow_mut()
+                .push(FakeCall::PaneClose(pane_id.to_owned()));
+            if self.fail_close.get() {
+                return Err(Self::command_error());
+            }
+            Ok(())
+        }
+        fn pane_resize(
+            &self,
+            pane_id: &str,
+            direction: &str,
+            amount: Option<f64>,
+        ) -> Result<(), HerdrError> {
+            self.calls
+                .borrow_mut()
+                .push(format!("pane_resize:{pane_id}:{direction}:{amount:?}"));
+            self.typed_calls.borrow_mut().push(FakeCall::PaneResize(
+                pane_id.to_owned(),
+                direction.to_owned(),
+                amount.map(|amount| amount.to_string()),
+            ));
+            if self.fail_resize.get() {
+                return Err(Self::command_error());
+            }
+            Ok(())
         }
         fn api_schema(&self) -> Result<String, HerdrError> {
             self.calls.borrow_mut().push("api_schema".to_owned());

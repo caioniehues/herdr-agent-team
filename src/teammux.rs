@@ -31,10 +31,18 @@
 //! freshly minted `%N` (ids are allocated freely — no real tmux session to
 //! shadow, cmux comparative research correction a) before printing it.
 //!
-//! Every other successfully-*parsed* verb (lifecycle, styling — commits
-//! 6-7) is still a deliberate, labeled "not yet implemented" placeholder,
-//! not a translate-don't-emulate failure: it is recognized by `tmuxargs`,
-//! just not yet handled here.
+//! Commit 6 adds the lifecycle verbs: `respawn-pane -k` (launch the real
+//! teammate process via `herdr pane run` — herdr has no separate "respawn"
+//! primitive), `kill-pane` (`herdr pane close` + [`IdMap::remove`], so a
+//! torn-down pane stops resolving), `select-pane -T` (`herdr pane rename`),
+//! and `resize-pane -x` (`herdr pane resize` — a documented, one-way
+//! mapping from tmux's absolute-size target onto herdr's directional
+//! border-move model, see `resize_pane`'s doc comment).
+//!
+//! Every other successfully-*parsed* verb (styling — commit 7) is still a
+//! deliberate, labeled "not yet implemented" placeholder, not a
+//! translate-don't-emulate failure: it is recognized by `tmuxargs`, just
+//! not yet handled here.
 
 use crate::herdr::HerdrApi;
 use crate::idmap::IdMap;
@@ -80,10 +88,117 @@ pub fn dispatch<H: HerdrApi>(
             size,
             ..
         } => split_window(herdr, idmap, &target, direction, size.as_deref()),
+        Verb::RespawnPane { pane, command } => respawn_pane(herdr, idmap, &pane, &command),
+        Verb::KillPane { pane } => kill_pane(herdr, idmap, &pane),
+        Verb::SelectPaneTitle { pane, title } => select_pane_title(herdr, idmap, &pane, &title),
+        Verb::ResizePane { pane, amount } => resize_pane(herdr, idmap, &pane, &amount),
         other => DispatchOutcome::Error {
-            message: format!(
-                "teammux: {other:?} not yet implemented (issue #85 commits 6-7 pending)"
-            ),
+            message: format!("teammux: {other:?} not yet implemented (issue #85 commit 7 pending)"),
+        },
+    }
+}
+
+/// `respawn-pane -k -t %N -- CMD`: launch the real teammate process in the
+/// already-split pane, via `herdr pane run` (closest herdr match — herdr has
+/// no separate "respawn the pane's process" primitive; `pane run` submits
+/// `CMD` to the pane the same way a human typing it would).
+fn respawn_pane<H: HerdrApi>(
+    herdr: &H,
+    idmap: &IdMap,
+    pane: &TmuxId,
+    command: &str,
+) -> DispatchOutcome {
+    let herdr_pane_id = match idmap.lookup(pane.as_str()) {
+        Some(id) => id.to_owned(),
+        None => return unknown_tmux_id("respawn-pane", pane.as_str()),
+    };
+    match herdr.pane_run(&herdr_pane_id, command) {
+        Ok(()) => DispatchOutcome::Ok {
+            stdout: String::new(),
+        },
+        Err(error) => DispatchOutcome::Error {
+            message: format!("teammux: respawn-pane: herdr pane run failed: {error}"),
+        },
+    }
+}
+
+/// `kill-pane -t %N`: close the herdr pane and drop its idmap registration —
+/// a torn-down pane must not be a resolvable tmux id afterwards.
+fn kill_pane<H: HerdrApi>(herdr: &H, idmap: &IdMap, pane: &TmuxId) -> DispatchOutcome {
+    let herdr_pane_id = match idmap.lookup(pane.as_str()) {
+        Some(id) => id.to_owned(),
+        None => return unknown_tmux_id("kill-pane", pane.as_str()),
+    };
+    if let Err(error) = herdr.pane_close(&herdr_pane_id) {
+        return DispatchOutcome::Error {
+            message: format!("teammux: kill-pane: herdr pane close failed: {error}"),
+        };
+    }
+    match IdMap::remove(idmap.path(), pane.as_str()) {
+        Ok(()) => DispatchOutcome::Ok {
+            stdout: String::new(),
+        },
+        Err(error) => DispatchOutcome::Error {
+            message: format!("teammux: kill-pane: failed to deregister pane: {error}"),
+        },
+    }
+}
+
+/// `select-pane -t %N -T TITLE`: rename the herdr pane.
+fn select_pane_title<H: HerdrApi>(
+    herdr: &H,
+    idmap: &IdMap,
+    pane: &TmuxId,
+    title: &str,
+) -> DispatchOutcome {
+    let herdr_pane_id = match idmap.lookup(pane.as_str()) {
+        Some(id) => id.to_owned(),
+        None => return unknown_tmux_id("select-pane", pane.as_str()),
+    };
+    match herdr.pane_rename(&herdr_pane_id, title) {
+        Ok(()) => DispatchOutcome::Ok {
+            stdout: String::new(),
+        },
+        Err(error) => DispatchOutcome::Error {
+            message: format!("teammux: select-pane: herdr pane rename failed: {error}"),
+        },
+    }
+}
+
+/// `resize-pane -t %N -x AMOUNT`: herdr models resize as a directional
+/// border move (`--direction left|right|up|down [--amount FLOAT]`), not
+/// tmux's absolute-size-target `-x`. Documented assumption (findings.md,
+/// live `herdr pane --help`): `-x` (horizontal) maps onto a fixed `right`
+/// direction, with the percentage converted to the same 0-1 ratio
+/// `split-window` uses — there is no tmux-side direction to carry over,
+/// only every observed spike call moving one lead pane. `-y` is not in the
+/// verb inventory and is not parsed.
+fn resize_pane<H: HerdrApi>(
+    herdr: &H,
+    idmap: &IdMap,
+    pane: &TmuxId,
+    amount: &str,
+) -> DispatchOutcome {
+    let herdr_pane_id = match idmap.lookup(pane.as_str()) {
+        Some(id) => id.to_owned(),
+        None => return unknown_tmux_id("resize-pane", pane.as_str()),
+    };
+    let ratio = match parse_percentage(amount) {
+        Some(ratio) => ratio,
+        None => {
+            return DispatchOutcome::Error {
+                message: format!(
+                    "teammux: resize-pane: unsupported amount `{amount}` (expected a percentage like `30%`)"
+                ),
+            }
+        }
+    };
+    match herdr.pane_resize(&herdr_pane_id, "right", Some(ratio)) {
+        Ok(()) => DispatchOutcome::Ok {
+            stdout: String::new(),
+        },
+        Err(error) => DispatchOutcome::Error {
+            message: format!("teammux: resize-pane: herdr pane resize failed: {error}"),
         },
     }
 }
@@ -381,8 +496,9 @@ mod tests {
         let outcome = dispatch(
             &FakeHerdr::default(),
             &idmap,
-            call(Verb::KillPane {
+            call(Verb::SetWindowStyle {
                 pane: TmuxId::parse("%0").unwrap(),
+                style: "bg=default".to_owned(),
             }),
         );
         match outcome {
@@ -695,6 +811,212 @@ mod tests {
             DispatchOutcome::Error { message } => {
                 assert!(message.contains("herdr pane split failed"))
             }
+            other => panic!("expected an Error outcome, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn respawn_pane_submits_the_command_via_pane_run() {
+        let idmap = temp_idmap(&[("%1", "w1A:p6")]);
+        let fake = FakeHerdr::default();
+
+        let outcome = dispatch(
+            &fake,
+            &idmap,
+            call(Verb::RespawnPane {
+                pane: TmuxId::parse("%1").unwrap(),
+                command: "cd /tmp && claude".to_owned(),
+            }),
+        );
+        assert_eq!(
+            outcome,
+            DispatchOutcome::Ok {
+                stdout: String::new()
+            }
+        );
+        assert!(fake
+            .calls()
+            .iter()
+            .any(|call| call == "pane_run:w1A:p6:cd /tmp && claude"));
+    }
+
+    #[test]
+    fn respawn_pane_fails_loudly_for_an_unregistered_pane() {
+        let idmap = temp_idmap(&[]);
+        let outcome = dispatch(
+            &FakeHerdr::default(),
+            &idmap,
+            call(Verb::RespawnPane {
+                pane: TmuxId::parse("%9").unwrap(),
+                command: "claude".to_owned(),
+            }),
+        );
+        match outcome {
+            DispatchOutcome::Error { message } => assert!(message.contains("unknown tmux id")),
+            other => panic!("expected an Error outcome, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn kill_pane_closes_the_herdr_pane_and_deregisters_it() {
+        let idmap = temp_idmap(&[("%1", "w1A:p6")]);
+        let fake = FakeHerdr::default();
+
+        let outcome = dispatch(
+            &fake,
+            &idmap,
+            call(Verb::KillPane {
+                pane: TmuxId::parse("%1").unwrap(),
+            }),
+        );
+        assert_eq!(
+            outcome,
+            DispatchOutcome::Ok {
+                stdout: String::new()
+            }
+        );
+        assert!(fake.calls().iter().any(|call| call == "pane_close:w1A:p6"));
+
+        let reloaded = IdMap::load(idmap.path()).unwrap();
+        assert_eq!(reloaded.lookup("%1"), None);
+    }
+
+    #[test]
+    fn kill_pane_fails_loudly_for_an_unregistered_pane() {
+        let idmap = temp_idmap(&[]);
+        let outcome = dispatch(
+            &FakeHerdr::default(),
+            &idmap,
+            call(Verb::KillPane {
+                pane: TmuxId::parse("%9").unwrap(),
+            }),
+        );
+        match outcome {
+            DispatchOutcome::Error { message } => assert!(message.contains("unknown tmux id")),
+            other => panic!("expected an Error outcome, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn kill_pane_surfaces_a_herdr_close_failure_loudly_and_keeps_the_idmap_entry() {
+        let idmap = temp_idmap(&[("%1", "w1A:p6")]);
+        let fake = FakeHerdr::default();
+        fake.fail_close.set(true);
+
+        let outcome = dispatch(
+            &fake,
+            &idmap,
+            call(Verb::KillPane {
+                pane: TmuxId::parse("%1").unwrap(),
+            }),
+        );
+        match outcome {
+            DispatchOutcome::Error { message } => {
+                assert!(message.contains("herdr pane close failed"))
+            }
+            other => panic!("expected an Error outcome, got {other:?}"),
+        }
+        let reloaded = IdMap::load(idmap.path()).unwrap();
+        assert_eq!(reloaded.lookup("%1"), Some("w1A:p6"));
+    }
+
+    #[test]
+    fn select_pane_title_renames_the_herdr_pane() {
+        let idmap = temp_idmap(&[("%1", "w1A:p6")]);
+        let fake = FakeHerdr::default();
+
+        let outcome = dispatch(
+            &fake,
+            &idmap,
+            call(Verb::SelectPaneTitle {
+                pane: TmuxId::parse("%1").unwrap(),
+                title: "alpha".to_owned(),
+            }),
+        );
+        assert_eq!(
+            outcome,
+            DispatchOutcome::Ok {
+                stdout: String::new()
+            }
+        );
+        assert!(fake
+            .calls()
+            .iter()
+            .any(|call| call == "pane_rename:w1A:p6:alpha"));
+    }
+
+    #[test]
+    fn select_pane_title_fails_loudly_for_an_unregistered_pane() {
+        let idmap = temp_idmap(&[]);
+        let outcome = dispatch(
+            &FakeHerdr::default(),
+            &idmap,
+            call(Verb::SelectPaneTitle {
+                pane: TmuxId::parse("%9").unwrap(),
+                title: "alpha".to_owned(),
+            }),
+        );
+        match outcome {
+            DispatchOutcome::Error { message } => assert!(message.contains("unknown tmux id")),
+            other => panic!("expected an Error outcome, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resize_pane_converts_percentage_and_maps_x_to_a_fixed_direction() {
+        let idmap = temp_idmap(&[("%0", "w1A:p1")]);
+        let fake = FakeHerdr::default();
+
+        let outcome = dispatch(
+            &fake,
+            &idmap,
+            call(Verb::ResizePane {
+                pane: TmuxId::parse("%0").unwrap(),
+                amount: "30%".to_owned(),
+            }),
+        );
+        assert_eq!(
+            outcome,
+            DispatchOutcome::Ok {
+                stdout: String::new()
+            }
+        );
+        assert!(fake
+            .calls()
+            .iter()
+            .any(|call| call == "pane_resize:w1A:p1:right:Some(0.3)"));
+    }
+
+    #[test]
+    fn resize_pane_fails_loudly_for_an_unregistered_pane() {
+        let idmap = temp_idmap(&[]);
+        let outcome = dispatch(
+            &FakeHerdr::default(),
+            &idmap,
+            call(Verb::ResizePane {
+                pane: TmuxId::parse("%9").unwrap(),
+                amount: "30%".to_owned(),
+            }),
+        );
+        match outcome {
+            DispatchOutcome::Error { message } => assert!(message.contains("unknown tmux id")),
+            other => panic!("expected an Error outcome, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resize_pane_fails_loudly_on_an_unsupported_amount_shape() {
+        let idmap = temp_idmap(&[("%0", "w1A:p1")]);
+        let outcome = dispatch(
+            &FakeHerdr::default(),
+            &idmap,
+            call(Verb::ResizePane {
+                pane: TmuxId::parse("%0").unwrap(),
+                amount: "40cells".to_owned(),
+            }),
+        );
+        match outcome {
+            DispatchOutcome::Error { message } => assert!(message.contains("unsupported amount")),
             other => panic!("expected an Error outcome, got {other:?}"),
         }
     }

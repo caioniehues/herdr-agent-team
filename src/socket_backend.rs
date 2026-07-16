@@ -303,6 +303,12 @@ impl<C: HerdrApi> HerdrApi for SocketClient<C> {
     fn pane_rename(&self, p: &str, t: &str) -> Result<(), HerdrError> {
         self.fallback().pane_rename(p, t)
     }
+    fn pane_close(&self, p: &str) -> Result<(), HerdrError> {
+        self.fallback().pane_close(p)
+    }
+    fn pane_resize(&self, p: &str, direction: &str, amount: Option<f64>) -> Result<(), HerdrError> {
+        self.fallback().pane_resize(p, direction, amount)
+    }
     fn agent_wait(&self, p: &str, s: &str, t: Duration) -> Result<WaitOutcome, HerdrError> {
         self.fallback().agent_wait(p, s, t)
     }
