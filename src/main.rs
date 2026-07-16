@@ -19,6 +19,7 @@ pub mod paths;
 pub mod reconcile;
 pub mod run;
 pub mod socket;
+#[cfg(unix)]
 pub mod socket_backend;
 pub mod spawn;
 pub mod spec;

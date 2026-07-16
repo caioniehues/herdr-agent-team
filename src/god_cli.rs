@@ -1,5 +1,6 @@
 //! Durable god-side inbox, report, and wait verbs (spec section 13).
 
+use crate::agents_md::COMPLETION_SENTINEL;
 use crate::paths;
 use crate::reconcile::HookMetadata;
 use crate::run::{list_active_runs, load_hook_metadata, load_run, update_run_with_hook, RunError};
@@ -43,6 +44,7 @@ pub enum GodCliError {
 pub struct InboxRow {
     pub worker: String,
     pub report_present: bool,
+    pub report_ready: bool,
     pub report_mtime_ms: Option<u64>,
     pub attention: bool,
     pub read: bool,
@@ -195,12 +197,20 @@ pub fn wait_command(args: &[String]) -> Result<WaitVerdict, GodCliError> {
     let (run_dir, until, timeout, json) = parse_wait(args)?;
     let run_dir = select_wait_run(run_dir.as_deref())?;
     let fallback = RunGodCollector { run_dir };
+    #[cfg(unix)]
     let collector: Box<dyn GodCollector> = match crate::socket::SocketClient::try_from_env() {
-        Some(socket) => Box::new(crate::socket_backend::SocketGodCollector::new(
+        Ok(Some(socket)) => Box::new(crate::socket_backend::SocketGodCollector::new(
             socket, fallback,
         )),
-        None => Box::new(fallback),
+        Ok(None) => Box::new(fallback),
+        Err(e) => {
+            return Err(GodCliError::Usage(format!(
+                "HERDR_TEAM_BACKEND=socket failed: {e}"
+            )))
+        }
     };
+    #[cfg(not(unix))]
+    let collector: Box<dyn GodCollector> = Box::new(fallback);
     validate_until(&collector.collect()?, &until)?;
     let verdict = wait_with(collector.as_ref(), &until, timeout)?;
     if json {
@@ -258,9 +268,9 @@ fn verdict(
 
 fn condition_met(s: &GodSnapshot, until: &Until) -> bool {
     match until {
-        Until::AnyReport => s.rows.iter().any(|r| r.report_present),
-        Until::Report(name) => s.rows.iter().any(|r| r.worker == *name && r.report_present),
-        Until::AllReports => !s.rows.is_empty() && s.rows.iter().all(|r| r.report_present),
+        Until::AnyReport => s.rows.iter().any(|r| r.report_ready),
+        Until::Report(name) => s.rows.iter().any(|r| r.worker == *name && r.report_ready),
+        Until::AllReports => !s.rows.is_empty() && s.rows.iter().all(|r| r.report_ready),
         Until::Blocked => s.statuses.iter().any(|(_, status)| status == "blocked"),
         Until::Attention => s.rows.iter().any(|r| r.attention),
         Until::AllTerminal => s
@@ -273,7 +283,7 @@ fn condition_met(s: &GodSnapshot, until: &Until) -> bool {
 fn dead_worker(s: &GodSnapshot, until: &Until) -> Option<String> {
     let required = |name: &str| match until {
         Until::Report(w) => w == name,
-        Until::AnyReport => !s.rows.iter().any(|r| r.report_present),
+        Until::AnyReport => !s.rows.iter().any(|r| r.report_ready),
         Until::AllReports => true,
         Until::Blocked | Until::Attention => all_terminal_without_reports(s),
         Until::AllTerminal => false,
@@ -281,7 +291,7 @@ fn dead_worker(s: &GodSnapshot, until: &Until) -> Option<String> {
     s.worker_lifecycles.iter().find_map(|(name, state)| {
         (required(name)
             && terminal(*state)
-            && !s.rows.iter().any(|r| r.worker == *name && r.report_present))
+            && !s.rows.iter().any(|r| r.worker == *name && r.report_ready))
         .then(|| name.clone())
     })
 }
@@ -292,7 +302,7 @@ fn all_terminal_without_reports(snapshot: &GodSnapshot) -> bool {
             .worker_lifecycles
             .iter()
             .all(|(_, lifecycle)| terminal(*lifecycle))
-        && snapshot.rows.iter().all(|row| !row.report_present)
+        && snapshot.rows.iter().all(|row| !row.report_ready)
 }
 
 fn validate_until(snapshot: &GodSnapshot, until: &Until) -> Result<(), GodCliError> {
@@ -353,6 +363,7 @@ fn row(run_dir: &Path, hook: &HookMetadata, worker: &str) -> Result<InboxRow, Go
     Ok(InboxRow {
         worker: worker.into(),
         report_present: mtime.is_some(),
+        report_ready: report_ready(&path)?,
         report_mtime_ms: mtime,
         attention: hook.attention_pending.get(worker).copied().unwrap_or(false)
             || status == Some("blocked"),
@@ -360,6 +371,18 @@ fn row(run_dir: &Path, hook: &HookMetadata, worker: &str) -> Result<InboxRow, Go
             .is_some_and(|m| hook.report_read_mtime_ms.get(worker).copied().unwrap_or(0) >= m),
         stopped_not_done: mtime.is_none() && matches!(status, Some("idle" | "done")),
     })
+}
+
+fn report_ready(path: &Path) -> Result<bool, io::Error> {
+    match fs::read_to_string(path) {
+        Ok(contents) => Ok(contents
+            .lines()
+            .rev()
+            .find(|line| !line.trim().is_empty())
+            .is_some_and(|line| line == COMPLETION_SENTINEL)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error),
+    }
 }
 
 fn report_mtime_ms(path: &Path) -> Result<Option<u64>, io::Error> {
@@ -547,6 +570,7 @@ mod tests {
             rows: vec![InboxRow {
                 worker: "a".into(),
                 report_present: report,
+                report_ready: report,
                 report_mtime_ms: report.then_some(1),
                 attention: status == "attention",
                 read: false,
@@ -726,6 +750,16 @@ mod tests {
 
         let report = run.dir.join("inbox/a.md");
         fs::write(&report, "one\ntwo\n").unwrap();
+        let snapshot = collect_snapshot(&run.dir).unwrap();
+        assert!(
+            !condition_met(&snapshot, &Until::Report("a".into())),
+            "an unfinished report must not satisfy wait report:a"
+        );
+        fs::write(&report, format!("one\ntwo\n{COMPLETION_SENTINEL}\n")).unwrap();
+        assert!(condition_met(
+            &collect_snapshot(&run.dir).unwrap(),
+            &Until::Report("a".into())
+        ));
         let mtime = report_mtime_ms(&report).unwrap().unwrap();
         update_run_with_hook::<_, GodCliError>(&run.dir, |_, hook| {
             hook.report_read_mtime_ms.insert("a".into(), mtime);

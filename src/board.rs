@@ -163,6 +163,7 @@ pub fn action_args(
             "msg".into(),
             worker.clone(),
             "acknowledged".into(),
+            "--ack".into(),
             "--run".into(),
             run,
         ]),
@@ -206,13 +207,21 @@ pub fn render(snapshot: &BoardSnapshot, selection: usize) -> String {
 pub fn board_command(args: &[String]) -> Result<(), BoardError> {
     let run_dir = select_run(args)?;
     let fallback = RunCollector { run_dir };
-    if let Some(socket) = crate::socket::SocketClient::try_from_env() {
-        run_board(crate::socket_backend::SocketBoardCollector::new(
-            socket, fallback,
-        ))
-    } else {
-        run_board(fallback)
+    #[cfg(unix)]
+    match crate::socket::SocketClient::try_from_env() {
+        Ok(Some(socket)) => {
+            return run_board(crate::socket_backend::SocketBoardCollector::new(
+                socket, fallback,
+            ));
+        }
+        Ok(None) => {}
+        Err(e) => {
+            return Err(BoardError::Usage(format!(
+                "HERDR_TEAM_BACKEND=socket failed: {e}"
+            )))
+        }
     }
+    run_board(fallback)
 }
 
 pub fn open_report_command(args: &[String]) -> Result<(), BoardError> {
@@ -490,7 +499,7 @@ mod tests {
                 None
             ),
             Some(
-                vec!["msg", "f", "acknowledged", "--run", "/runs/team"]
+                vec!["msg", "f", "acknowledged", "--ack", "--run", "/runs/team"]
                     .into_iter()
                     .map(String::from)
                     .collect()

@@ -25,13 +25,13 @@ Before you become idle, blocked, or done:
 
 1. Write your durable report to `/state/runs/protocol-wave-20260714/inbox/builder.md`.
 2. Include your status, files changed, verification results, and any blockers.
-3. After the report is safely written, print this completion sentinel on its own line:
+3. Finish the report with this completion sentinel on its own final line, then print the same sentinel:
 
 ```text
 HERDR_TEAM_WORKER_COMPLETE
 ```
 
-The report is the durable payload. The god receives only a pointer to it when your status changes. Never print the sentinel before the report exists.
+The report is Result ready only when its final non-empty line is this sentinel. The god receives only a pointer to it when your status changes. Never print the sentinel before the report exists.
 
 ## God contact
 

@@ -818,12 +818,18 @@ fn launch_worker<H: HerdrApi>(
         )
     };
     let launcher = launcher_entry(launchers, &worker.agent)?;
-    let agent_already_running = resume_existing
-        && herdr
-            .pane_get(&pane_id)
-            .map_err(|source| worker_herdr(worker, "resume agent detection", source))?
-            .agent
-            .is_some();
+    let resume_pane = if resume_existing {
+        Some(
+            herdr
+                .pane_get(&pane_id)
+                .map_err(|source| worker_herdr(worker, "resume agent detection", source))?,
+        )
+    } else {
+        None
+    };
+    let agent_already_running = resume_pane
+        .as_ref()
+        .is_some_and(|pane| pane.agent.is_some());
     if !agent_already_running {
         herdr
             .pane_run(&pane_id, &shell_join(&launcher.command))
@@ -838,8 +844,19 @@ fn launch_worker<H: HerdrApi>(
         )?;
     }
 
-    let prompt = launch_prompt(worker, launcher, &protocol_path);
-    submit_worker_prompt(herdr, worker, &pane_id, &prompt, launcher.submit_verify)?;
+    // Post-submit/pre-checkpoint crash window: a pending worker whose agent
+    // is already `working` at resume received its brief before the crash
+    // (only the launch prompt starts a worker's turn; ADR-0006 treats
+    // `working` as submission evidence). Re-injecting would queue a
+    // duplicate brief, so only complete the checkpoint below.
+    let brief_already_submitted = agent_already_running
+        && resume_pane
+            .as_ref()
+            .is_some_and(|pane| pane.agent_status.as_deref() == Some("working"));
+    if !brief_already_submitted {
+        let prompt = launch_prompt(worker, launcher, &protocol_path);
+        submit_worker_prompt(herdr, worker, &pane_id, &prompt, launcher.submit_verify)?;
+    }
 
     {
         let mut run = run.lock().expect("run checkpoint lock");
@@ -1853,6 +1870,66 @@ mod tests {
             .any(|call| { call.starts_with("pane_run:pane-2:Read your brief at ") }));
         assert!(!calls.iter().any(|call| call == "pane_run:pane-2:'codex'"));
         assert!(!calls.iter().any(|call| call == "pane_run:pane-1:'claude'"));
+    }
+
+    #[test]
+    fn resume_does_not_reinject_a_brief_the_working_agent_already_received() {
+        let temp = TempDir::new();
+        let state_dir = temp.path().join("state");
+        let fake = FakeHerdr::default();
+        let setup = FakeSetupRunner::default();
+        let run = spawn_resolved(
+            team(temp.path(), vec![worker(temp.path(), "pending", "codex")]),
+            &launchers(),
+            &state_dir,
+            "god-pane".to_owned(),
+            &fake,
+            command_is_available,
+        )
+        .expect("seed complete run");
+        // Crash boundary: brief submitted (agent observed `working` per
+        // ADR-0006) but the BriefSubmitted checkpoint never persisted.
+        let mut partial = load_run(&run.dir).expect("load seed run");
+        let pending = partial.state.workers.get_mut("pending").unwrap();
+        pending.lifecycle = WorkerLifecycle::Pending;
+        pending.launch_checkpoint = WorkerLaunchCheckpoint::ResourcesReady;
+        save_run(&partial).expect("persist post-submit crash state");
+        *fake.pane.borrow_mut() = Some(crate::herdr::PaneInfo {
+            pane_id: "pane-1".to_owned(),
+            workspace_id: "workspace-1".to_owned(),
+            agent: Some("codex".to_owned()),
+            agent_id: Some("agent-session-pane-1".to_owned()),
+            agent_session: None,
+            agent_status: Some("working".to_owned()),
+            cwd: None,
+        });
+        fake.calls.borrow_mut().clear();
+
+        let resumed = resume_resolved(
+            partial,
+            &launchers(),
+            &fake,
+            command_is_available,
+            &setup,
+            Duration::ZERO,
+        )
+        .expect("resume across the post-submit crash window");
+
+        assert!(
+            !fake
+                .calls()
+                .iter()
+                .any(|call| call.contains("Read your brief at ")),
+            "a brief the working agent already received must not be re-injected"
+        );
+        assert_eq!(
+            resumed.state.workers["pending"].lifecycle,
+            WorkerLifecycle::Running
+        );
+        assert_eq!(
+            resumed.state.workers["pending"].launch_checkpoint,
+            WorkerLaunchCheckpoint::BriefSubmitted
+        );
     }
 
     #[test]

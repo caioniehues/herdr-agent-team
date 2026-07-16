@@ -3,9 +3,10 @@
 use crate::herdr::{HerdrApi, HerdrClient};
 use crate::metadata::{map_facts, MetadataCapabilities, MetadataFacts};
 use crate::msg;
-use crate::reconcile::{reconcile_at, IncomingEvent, ReconciliationAction};
+use crate::reconcile::{reconcile_at_with_reports, IncomingEvent, ReconciliationAction};
 use crate::run;
 use serde_json::{json, Value};
+use std::collections::BTreeSet;
 use std::fmt::Display;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -75,10 +76,23 @@ pub fn on_agent_status<H: HerdrApi>(
             .unwrap_or(300_000);
         let (run, reconciliation) =
             run::update_run_with_hook(&listed_run.dir, |run, metadata| -> Result<_, HookError> {
-                let mut reconciliation = reconcile_at(
+                let reports_present = run
+                    .state
+                    .workers
+                    .keys()
+                    .filter(|worker_name| {
+                        run.dir
+                            .join("inbox")
+                            .join(format!("{worker_name}.md"))
+                            .is_file()
+                    })
+                    .cloned()
+                    .collect::<BTreeSet<_>>();
+                let mut reconciliation = reconcile_at_with_reports(
                     &event,
                     run.state.clone(),
                     metadata.clone(),
+                    &reports_present,
                     now_ms,
                     blocked_threshold_ms,
                 );
@@ -133,7 +147,12 @@ pub fn on_agent_status<H: HerdrApi>(
                         MetadataFacts {
                             team: &run.state.spec.name,
                             role: &worker.role,
-                            task: None,
+                            task: run
+                                .state
+                                .workers
+                                .get(&worker_name)
+                                .and_then(|worker| worker.task.as_deref())
+                                .or(worker.task.as_deref()),
                             status: &status,
                             attention,
                         },
@@ -254,15 +273,86 @@ fn inject_pointer<H: HerdrApi>(
     Ok(())
 }
 
+/// A `.claim` older than this can only come from a drain that died between
+/// claim and delivery (issue #65): a live claim is held for at most one
+/// submission-verification cycle (~1 minute), never minutes.
+const STALE_CLAIM_THRESHOLD: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Requeue claims orphaned by a crashed drain so they stay retryable
+/// (spec §11). Age-gated so a concurrent invocation's live claim is never
+/// swept back (which would double-deliver — the defect #59 guarantee).
+fn sweep_stale_claims(run_dir: &Path, target: &str) -> Result<(), HookError> {
+    let outbox_dir = run_dir.join("outbox").join(target);
+    let entries = match std::fs::read_dir(&outbox_dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(source) => {
+            return Err(HookError::Io {
+                action: "read message outbox",
+                path: outbox_dir,
+                source,
+            })
+        }
+    };
+    for entry in entries {
+        let entry = entry.map_err(|source| HookError::Io {
+            action: "read message outbox entry",
+            path: outbox_dir.clone(),
+            source,
+        })?;
+        let path = entry.path();
+        if path.extension().and_then(|extension| extension.to_str()) != Some("claim") {
+            continue;
+        }
+        let stale = entry
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .ok()
+            .and_then(|modified| modified.elapsed().ok())
+            .is_some_and(|age| age >= STALE_CLAIM_THRESHOLD);
+        if !stale {
+            continue;
+        }
+        // Atomic and best-effort: ENOENT means a concurrent sweep or the
+        // owning drain already handled this claim.
+        let _ = std::fs::rename(&path, path.with_extension("msg"));
+    }
+    Ok(())
+}
+
 fn drain_outbox<E, F>(run_dir: &Path, target: &str, mut deliver: F) -> Result<(), HookError>
 where
     E: Display,
     F: FnMut(&str) -> Result<(), E>,
 {
+    // Sweep BEFORE listing so a crashed drain's orphaned claim re-enters this
+    // very drain pass instead of waiting for yet another status flip.
+    sweep_stale_claims(run_dir, target)?;
     for path in queued_message_paths(run_dir, target)? {
-        let text = match std::fs::read_to_string(&path) {
+        // Atomically claim the message before consuming it. Concurrent hook
+        // invocations both list the same queued entry (defect #59); the rename
+        // winner owns delivery, and a loser's ENOENT means already-claimed —
+        // not a delivery failure — so it must skip silently.
+        let claimed = path.with_extension("claim");
+        if let Err(error) = std::fs::rename(&path, &claimed) {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                continue;
+            }
+            append_delivery_event(
+                run_dir,
+                "delivery_failed",
+                target,
+                &path,
+                Some(&error.to_string()),
+            )?;
+            break;
+        }
+
+        let text = match std::fs::read_to_string(&claimed) {
             Ok(text) => text,
             Err(error) => {
+                // Best-effort requeue so the message is retried on a later drain.
+                let _ = std::fs::rename(&claimed, &path);
                 append_delivery_event(
                     run_dir,
                     "delivery_failed",
@@ -275,6 +365,8 @@ where
         };
 
         if let Err(error) = deliver(&text) {
+            // Best-effort requeue so the message is retried on a later drain.
+            let _ = std::fs::rename(&claimed, &path);
             append_delivery_event(
                 run_dir,
                 "delivery_failed",
@@ -285,16 +377,21 @@ where
             break;
         }
 
-        if let Err(error) = std::fs::remove_file(&path) {
-            append_delivery_event(
-                run_dir,
-                "delivery_failed",
-                target,
-                &path,
-                Some(&error.to_string()),
-            )?;
-            break;
+        if let Err(error) = std::fs::remove_file(&claimed) {
+            // After a successful claim the file is exclusively ours: ENOENT
+            // here is already-consumed, never a delivery failure.
+            if error.kind() != std::io::ErrorKind::NotFound {
+                append_delivery_event(
+                    run_dir,
+                    "delivery_failed",
+                    target,
+                    &path,
+                    Some(&error.to_string()),
+                )?;
+                break;
+            }
         }
+        // `delivered` = Submitted (spec §11 message lifecycle); not agent-acknowledged.
         append_delivery_event(run_dir, "delivered", target, &path, None)?;
     }
     Ok(())
@@ -553,6 +650,132 @@ mod tests {
     }
 
     #[test]
+    fn metadata_payload_includes_a_workers_task_when_titles_are_supported() {
+        #[derive(Default)]
+        struct MetadataHerdr {
+            update: std::cell::RefCell<Option<crate::metadata::MetadataUpdate>>,
+        }
+
+        impl HerdrApi for MetadataHerdr {
+            fn api_schema(&self) -> Result<String, crate::herdr::HerdrError> {
+                Ok(r#"{"schemas":{"request":{"$defs":{"PaneReportMetadataParams":{"properties":{"pane_id":{},"source":{},"title":{}}}}}}}"#.to_owned())
+            }
+
+            fn pane_report_metadata(
+                &self,
+                _: &str,
+                update: &crate::metadata::MetadataUpdate,
+            ) -> Result<(), crate::herdr::HerdrError> {
+                *self.update.borrow_mut() = Some(update.clone());
+                Ok(())
+            }
+        }
+
+        let temp = TempDir::new();
+        let mut run = fixture_run(temp.path(), "worker-pane");
+        run.state.workers.get_mut("builder").unwrap().task = Some("ship hook seam".to_owned());
+        run::save_run(&run).expect("persist worker task");
+        let herdr = MetadataHerdr::default();
+
+        on_agent_status(
+            &event("worker-pane", "working").to_string(),
+            temp.path(),
+            &herdr,
+        )
+        .expect("publish worker metadata");
+
+        assert_eq!(
+            herdr.update.borrow().as_ref().unwrap().title.as_deref(),
+            Some("ship hook seam")
+        );
+    }
+
+    #[test]
+    fn stale_claim_from_a_crashed_drain_is_swept_back_and_delivered() {
+        let temp = TempDir::new();
+        let run = fixture_run(temp.path(), "worker-pane");
+        // Simulate a drain that died between claim and delivery (issue #65):
+        // the message exists only as an aged `.claim` file, invisible to the
+        // `.msg` listing.
+        let outbox = run.dir.join("outbox/builder");
+        fs::create_dir_all(&outbox).expect("create fixture outbox");
+        let stale = outbox.join("00000000000000000001.claim");
+        fs::write(&stale, "orphaned once").expect("write stale claim");
+        let crashed_at = SystemTime::now() - std::time::Duration::from_secs(3_600);
+        fs::File::options()
+            .write(true)
+            .open(&stale)
+            .expect("open stale claim")
+            .set_times(fs::FileTimes::new().set_modified(crashed_at))
+            .expect("backdate stale claim");
+        let mut deliveries = Vec::new();
+
+        drain_outbox(&run.dir, "builder", |text| {
+            deliveries.push(text.to_owned());
+            Ok::<(), std::convert::Infallible>(())
+        })
+        .expect("drain outbox with stale claim");
+
+        assert_eq!(
+            deliveries,
+            ["orphaned once"],
+            "a crashed drain's claim must stay retryable (spec §11), not orphaned forever"
+        );
+        assert!(!stale.exists(), "swept claim must be consumed");
+        let events = read_events(&run);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event["event"] == "delivered")
+                .count(),
+            1,
+            "exactly one delivered event: {events:?}"
+        );
+    }
+
+    #[test]
+    fn duplicate_drains_never_record_delivery_failed_after_delivered() {
+        let temp = TempDir::new();
+        let run = fixture_run(temp.path(), "worker-pane");
+        queue_message(&run, 1, "queued once");
+        let mut deliveries = Vec::new();
+
+        // Simulate the twice-reproduced live race (defect #59): a second hook
+        // invocation drains the same outbox entry while the first is mid-flight.
+        drain_outbox(&run.dir, "builder", |text| {
+            drain_outbox(&run.dir, "builder", |text| {
+                deliveries.push(text.to_owned());
+                Ok::<(), std::convert::Infallible>(())
+            })
+            .expect("concurrent duplicate drain");
+            deliveries.push(text.to_owned());
+            Ok::<(), std::convert::Infallible>(())
+        })
+        .expect("original drain");
+
+        assert_eq!(
+            deliveries,
+            ["queued once"],
+            "the message must be delivered exactly once"
+        );
+        let events = read_events(&run);
+        assert!(
+            !events
+                .iter()
+                .any(|event| event["event"] == "delivery_failed"),
+            "ENOENT after a successful claim is already-delivered, not a failure: {events:?}"
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event["event"] == "delivered")
+                .count(),
+            1,
+            "exactly one delivered event: {events:?}"
+        );
+    }
+
+    #[test]
     fn drain_delivers_exact_content_in_sequence_order_then_removes_and_audits() {
         let temp = TempDir::new();
         let run = fixture_run(temp.path(), "worker-pane");
@@ -754,6 +977,8 @@ mod tests {
         let temp = TempDir::new();
         let run = fixture_run(temp.path(), "worker-pane");
         let fake = FakeHerdr::new(&temp);
+        // Team-complete requires the durable report, not just terminal status.
+        fs::write(run.dir.join("inbox/builder.md"), "# report\n").expect("write fixture report");
 
         for status in ["blocked", "done"] {
             on_agent_status(

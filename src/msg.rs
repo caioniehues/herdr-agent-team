@@ -16,7 +16,7 @@ use std::time::Duration;
 use thiserror::Error;
 
 const MSG_USAGE: &str =
-    "usage: herdr-agent-team msg <target> <text> [--attention] [--run <run-dir>]";
+    "usage: herdr-agent-team msg <target> <text> [--attention] [--ack] [--run <run-dir>]";
 const SUBMIT_GRACE_TIMEOUT: Duration = Duration::from_secs(2);
 const SUBMIT_VERIFY_TIMEOUT: Duration = Duration::from_secs(30);
 const OUTBOX_DIR: &str = "outbox";
@@ -82,6 +82,9 @@ pub enum MsgError {
 
     #[error("--attention requires HERDR_PANE_ID for a recorded worker pane")]
     AttentionSource,
+
+    #[error("--ack is only valid for a god message to a single worker")]
+    AckTarget,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -90,6 +93,7 @@ struct MsgArguments {
     text: String,
     run_dir: Option<PathBuf>,
     attention: bool,
+    ack: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -108,6 +112,7 @@ enum DeliveryDecision {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum MessageOutcome {
+    /// Submitted to the target pane's input (audit word `delivered`, spec §11); not agent-acknowledged.
     Delivered,
     Enqueued(PathBuf),
 }
@@ -119,6 +124,11 @@ pub fn msg_command(args: &[String]) -> Result<(), MsgError> {
             "--attention is only valid with the singular god target",
         ));
     }
+    if parsed.ack
+        && (parsed.attention || parsed.target == "god" || multi_target_form(&parsed.target))
+    {
+        return Err(MsgError::AckTarget);
+    }
     let run = select_run(parsed.run_dir.as_deref())?;
     let launchers = load_launchers()?;
     let herdr = HerdrClient::from_env();
@@ -126,7 +136,14 @@ pub fn msg_command(args: &[String]) -> Result<(), MsgError> {
     if parsed.attention {
         request_attention(&run, &parsed.target, &parsed.text, &herdr)?;
     }
+    if parsed.ack {
+        clear_attention(&run, &parsed.target)?;
+    }
     Ok(())
+}
+
+fn multi_target_form(target: &str) -> bool {
+    target == "all" || target.contains(',')
 }
 
 fn send_to_targets<H: HerdrApi>(
@@ -220,6 +237,7 @@ fn parse_msg_arguments(args: &[String]) -> Result<MsgArguments, MsgError> {
     let mut positional = Vec::new();
     let mut run_dir = None;
     let mut attention = false;
+    let mut ack = false;
     let mut index = 0;
 
     while index < args.len() {
@@ -228,6 +246,11 @@ fn parse_msg_arguments(args: &[String]) -> Result<MsgArguments, MsgError> {
                 return Err(arguments("--attention may only be supplied once"));
             }
             attention = true;
+        } else if args[index] == "--ack" {
+            if ack {
+                return Err(arguments("--ack may only be supplied once"));
+            }
+            ack = true;
         } else if args[index] == "--run" {
             if run_dir.is_some() {
                 return Err(arguments("--run may only be supplied once"));
@@ -256,6 +279,7 @@ fn parse_msg_arguments(args: &[String]) -> Result<MsgArguments, MsgError> {
         text: positional.remove(0),
         run_dir,
         attention,
+        ack,
     })
 }
 
@@ -300,6 +324,20 @@ fn request_attention_from_pane<H: HerdrApi>(
             "request",
         )?;
     }
+    Ok(())
+}
+
+/// God-side owned clear of a worker's durable attention (spec section 11).
+/// Also releases the once-per-raise notification gate so the next raise
+/// notifies again.
+fn clear_attention(run: &RunBoard, worker_name: &str) -> Result<(), MsgError> {
+    update_run_with_hook(&run.dir, |_, metadata| -> Result<(), MsgError> {
+        metadata.attention_pending.remove(worker_name);
+        metadata
+            .aggregate_notifications
+            .remove(&format!("attention:{worker_name}"));
+        Ok(())
+    })?;
     Ok(())
 }
 
@@ -999,6 +1037,7 @@ mod tests {
                 text: "hello".to_owned(),
                 run_dir: Some(PathBuf::from("/tmp/run")),
                 attention: false,
+                ack: false,
             }
         );
         assert!(parse_msg_arguments(&["builder".to_owned()]).is_err());
@@ -1039,6 +1078,68 @@ mod tests {
             metadata.aggregate_notifications.get("attention:builder"),
             Some(&true)
         );
+    }
+
+    #[test]
+    fn ack_clears_durable_attention_and_rearms_the_raise_notification() {
+        let temp = TempDir::new();
+        let run = crate::run::create_run(
+            temp.path(),
+            fixture_run(temp.path(), "builder", "claude").state,
+        )
+        .expect("persist ack fixture");
+        let herdr = fake_herdr("claude", Some("working"), []);
+        request_attention_from_pane(&run, "please review", "worker-pane", &herdr)
+            .expect("raise attention");
+
+        clear_attention(&run, "builder").expect("god-side ack");
+
+        let metadata = crate::run::load_hook_metadata(&run.dir).expect("load cleared attention");
+        assert_eq!(metadata.attention_pending.get("builder"), None);
+        assert_eq!(
+            metadata.aggregate_notifications.get("attention:builder"),
+            None
+        );
+
+        // A fresh raise after the ack is a new lifecycle: it notifies again.
+        request_attention_from_pane(&run, "second question", "worker-pane", &herdr)
+            .expect("re-raise attention");
+        assert_eq!(
+            herdr
+                .typed_calls()
+                .iter()
+                .filter(|call| matches!(call, Call::Notification(..)))
+                .count(),
+            2,
+        );
+        assert_eq!(
+            crate::run::load_hook_metadata(&run.dir)
+                .expect("load re-raised attention")
+                .attention_pending
+                .get("builder"),
+            Some(&true)
+        );
+    }
+
+    #[test]
+    fn ack_rejects_god_multi_target_and_attention_combinations() {
+        for args in [
+            vec!["god".to_owned(), "text".to_owned(), "--ack".to_owned()],
+            vec!["all".to_owned(), "text".to_owned(), "--ack".to_owned()],
+            vec!["a,b".to_owned(), "text".to_owned(), "--ack".to_owned()],
+            vec![
+                "god".to_owned(),
+                "text".to_owned(),
+                "--ack".to_owned(),
+                "--attention".to_owned(),
+            ],
+        ] {
+            let error = msg_command(&args).unwrap_err();
+            assert!(
+                matches!(error, MsgError::AckTarget),
+                "expected AckTarget for {args:?}, got {error}"
+            );
+        }
     }
 
     #[test]

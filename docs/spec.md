@@ -256,8 +256,8 @@ feature.
    shared FakeHerdr, hook.rs trait-injected; launcher loading deduped.
    Behavior-neutral enabler for the socket backend and the god toolkit.
 6. **God toolkit (#23, #24, #25)** — reshaped 2026-07-15 (god-lens review):
-   `team wait --until any-report|report:<w>|all-reports|blocked|attention|
-   all-terminal` over run state + inbox (report existence = completion truth;
+  `team wait --until any-report|report:<w>|all-reports|blocked|attention|
+  all-terminal` over run state + inbox (Result ready report = completion truth;
    never pane attention states; CLI-polling v1 behind a collector trait);
    `inbox`/`report` verbs with read-marks and stopped-not-done triage;
    zero-ceremony invocation (self-resolved plugin dirs); `msg all`;
@@ -449,7 +449,7 @@ herdr primitives; they get one plugin verb.
 ### `msg` subcommand
 
 ```
-herdr-agent-team msg <target> <text> [--attention] [--run <run-dir>]
+herdr-agent-team msg <target> <text> [--attention] [--ack] [--run <run-dir>]
 ```
 
 - `<target>`: `god` or a worker name from the active run. Resolution: name →
@@ -476,16 +476,68 @@ herdr-agent-team msg <target> <text> [--attention] [--run <run-dir>]
   once for that worker. This is the explicit attention channel; agent status
   values remain Herdr's fixed enum.
 
+### Message lifecycle — Queued / Submitted / Acknowledged (adopted 2026-07-15, Stage 3)
+
+Product vocabulary for one message's states:
+
+- **Queued** — written to the outbox (`MessageOutcome::Enqueued`), awaiting
+  the hook drain.
+- **Submitted** — typed into the target pane's input via `pane run` with
+  submission verified per launcher policy. **Decided: the code and audit
+  words stay `delivered`** (`MessageOutcome::Delivered`; the `delivered`
+  event in `inbox/events.jsonl`) so the durable event stream remains
+  compatible with existing runs — read **Delivered = Submitted**. It is
+  submission semantics only: no claim the agent read or processed the text.
+- **Acknowledged** — the target demonstrably read/acted on the message.
+  Today this is only human-observable; no durable per-message ack exists.
+  (`msg --ack` clears *attention*, not a message — see below.)
+
+**Non-guarantee (#60, decided 2026-07-15): submission is asynchronous to
+worker progress.** Stage 0 run 2 showed a god's "immediate" message landing
+after a fast worker had already finalized its first report (the worker then
+updated the report). This is accepted semantics: submission ordering is not
+synchronized with what the worker has done or is doing. A god that needs
+read-before-work sequencing must wait for Acknowledged — a future concern,
+since acknowledgment is currently only human-observable.
+
+Report readiness uses the separate **Result ready / completion sentinel**
+vocabulary (§13): a report is ready only when its final non-empty line is
+`HERDR_TEAM_WORKER_COMPLETE`.
+
+### Attention lifecycle (raise / observe / clear — decided 2026-07-15)
+
+Attention has an **owned lifecycle** in durable run state
+(`[hook] attention_pending` in `run.toml`); it is never consumed as a side
+effect of unrelated activity.
+
+- **Raise** — worker-owned: `msg god <text> --attention` sets
+  `attention_pending[<worker>] = true` and emits one `notification show`
+  per raise cycle (gated by `aggregate_notifications["attention:<w>"]`).
+- **Observe** — read-only, everywhere: the inbox row (`attention=true`),
+  `team wait --until attention`, and every hook metadata publish carry the
+  pending flag. Status flips (idle/working/blocked/done/unknown) re-publish
+  it but MUST NOT clear it.
+- **Clear** — god-owned: `msg <worker> <text> --ack` answers the worker and
+  clears `attention_pending[<worker>]` plus the raise-notification gate, so
+  a later raise notifies again. `--ack` is valid only for a god message to
+  a single worker (never `god`, `all`, comma lists, or with `--attention`).
+  The board's `[g] ack` row action issues exactly this verb.
+
 ### Outbox + hook drain
 
 - Queue location: `<run>/outbox/<target>/<seq>.msg` (zero-padded sequence,
   content = exact text to deliver).
 - The `pane.agent_status_changed` hook (§5), on any team member flipping to
-  `idle` or `done`, drains that member's outbox in sequence order: deliver via
-  `pane run`, verify, delete the file, append a `delivered` entry to
-  `inbox/events.jsonl`. Drain happens before report-pointer injection logic.
-- Failed delivery leaves the file in place (retried on the next flip) and
-  logs a `delivery_failed` event.
+  `idle` or `done`, drains that member's outbox in sequence order: atomically
+  claim the entry (rename `<seq>.msg` → `<seq>.claim`), deliver via `pane
+  run`, verify, remove the claimed file, append a `delivered` entry (=
+  **Submitted**, per the lifecycle above) to `inbox/events.jsonl`. Drain
+  happens before report-pointer injection logic.
+- Concurrent duplicate drains are resolved by the atomic claim (defect #59):
+  the rename winner owns delivery; a loser's ENOENT means already-claimed and
+  is skipped silently — never recorded as a failure.
+- Failed delivery requeues the claimed file (renamed back to `.msg`, retried
+  on the next flip) and logs a `delivery_failed` event.
 - No daemon; the hook is the only drain trigger. Worst case latency = time to
   the target's next status flip, which is exactly when it can read the
   message anyway.
@@ -572,7 +624,10 @@ herdr-agent-team report <worker> [--run <dir>] [--head N]
   returns the distinct `inactive_run` verdict and exits 4; an explicitly
   selected inactive run is rejected before polling. Usage, resolution, and I/O
   errors exit 1. `--json` emits one stable single-line verdict.
-- Report-file existence is completion truth. `blocked` and `attention` come
+- A report is **Result ready** only when its final non-empty line is the
+  worker-protocol completion sentinel `HERDR_TEAM_WORKER_COMPLETE`; mere file
+  existence is not completion truth. `any-report`, `report:<worker>`, and
+  `all-reports` wait only for Result ready reports. `blocked` and `attention` come
   from durable hook metadata; `all-terminal` comes from worker lifecycle.
   `all-terminal` is literal: failed and orphaned workers count as terminal and
   the condition exits 0. For `blocked`/`attention`, an all-terminal team that

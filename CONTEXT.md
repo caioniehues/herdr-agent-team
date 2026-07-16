@@ -96,6 +96,19 @@ legacy orchestration terms (still accurate for the v1.x surface) below.
   the target pane. This does not prove the worker read or acted on it.
 - **Acknowledged** — the target worker has produced explicit evidence that it
   received an instruction.
+- **Message lifecycle** — **Queued / Submitted / Acknowledged**. **Queued**:
+  the message sits in the outbox awaiting drain (`MessageOutcome::Enqueued`).
+  **Submitted**: the text was typed into the target pane's input and
+  submission was verified per launcher policy — this is what the code and the
+  durable audit event call `delivered` (**Delivered → Submitted**; the word
+  is kept in `MessageOutcome::Delivered` and `events.jsonl` for
+  compatibility).
+- **Attention lifecycle** — the owned raise/observe/clear cycle of a worker's
+  explicit attention request. Raised by the worker (`msg god <text>
+  --attention`), persisted in durable run state (`attention_pending`),
+  observable on the inbox/board and every metadata publish, and cleared only
+  by an explicit god-side ack (`msg <worker> <text> --ack`). Status flips
+  never consume it.
 - **Queues mid-turn** — launcher-table property: whether a mid-turn `pane
   run` into that agent's TUI queues as a pending user message (claude:
   verified true; codex: verified true) or risks interrupting the turn.

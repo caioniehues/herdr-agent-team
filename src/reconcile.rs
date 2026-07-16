@@ -3,7 +3,7 @@
 use crate::metadata::MetadataCapabilities;
 use crate::types::{RunLifecycle, RunState, WorkerLifecycle};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -110,14 +110,43 @@ pub struct Reconciliation {
 
 /// Reconcile one event against one active run without I/O or process spawning.
 pub fn reconcile(event: &IncomingEvent, state: RunState, metadata: HookMetadata) -> Reconciliation {
-    reconcile_at(event, state, metadata, 0, 0)
+    reconcile_with_reports(event, state, metadata, &BTreeSet::new())
+}
+
+/// Reconcile one event with the durable reports currently present in the inbox.
+pub fn reconcile_with_reports(
+    event: &IncomingEvent,
+    state: RunState,
+    metadata: HookMetadata,
+    reports_present: &BTreeSet<String>,
+) -> Reconciliation {
+    reconcile_at_with_reports(event, state, metadata, reports_present, 0, 0)
 }
 
 /// Pure reconciliation with an injected clock for the blocked-duration policy.
 pub fn reconcile_at(
     event: &IncomingEvent,
+    state: RunState,
+    metadata: HookMetadata,
+    now_ms: u64,
+    blocked_threshold_ms: u64,
+) -> Reconciliation {
+    reconcile_at_with_reports(
+        event,
+        state,
+        metadata,
+        &BTreeSet::new(),
+        now_ms,
+        blocked_threshold_ms,
+    )
+}
+
+/// Pure reconciliation with durable report presence and an injected clock.
+pub fn reconcile_at_with_reports(
+    event: &IncomingEvent,
     mut state: RunState,
     mut metadata: HookMetadata,
+    reports_present: &BTreeSet<String>,
     now_ms: u64,
     blocked_threshold_ms: u64,
 ) -> Reconciliation {
@@ -190,7 +219,13 @@ pub fn reconcile_at(
                 .entry(worker_name.clone())
                 .or_insert(0);
             *sequence += 1;
-            let attention = metadata.attention_pending.remove(&worker_name).is_some();
+            // Attention is durable: raised by the worker, observable on every
+            // publish, cleared only by an explicit god-side ack (`msg --ack`).
+            let attention = metadata
+                .attention_pending
+                .get(&worker_name)
+                .copied()
+                .unwrap_or(false);
             actions.push(ReconciliationAction::PublishMetadata {
                 worker_name: worker_name.clone(),
                 status: status.clone(),
@@ -223,7 +258,7 @@ pub fn reconcile_at(
                 matches!(
                     metadata.worker_status.get(name).map(String::as_str),
                     Some("idle" | "done")
-                )
+                ) && reports_present.contains(name)
             }) {
                 notify_once(
                     &mut metadata,
@@ -656,18 +691,98 @@ mod tests {
             0,
         );
 
-        let completed = reconcile(
+        let completed = reconcile_with_reports(
             &IncomingEvent::AgentStatusChanged {
                 pane_id: "pane-1".into(),
                 status: "idle".into(),
             },
             state(),
             HookMetadata::default(),
+            &BTreeSet::from(["builder".to_owned()]),
         );
         assert!(completed
             .metadata
             .aggregate_notifications
             .contains_key("team-complete"));
+    }
+
+    #[test]
+    fn all_terminal_workers_without_reports_do_not_notify_team_complete() {
+        let mut two_workers = state();
+        two_workers.spec.workers.push(WorkerSpec {
+            name: "reviewer".to_owned(),
+            agent: "claude".to_owned(),
+            role: "review".to_owned(),
+            task: None,
+            worktree: false,
+            branch: None,
+            brief: PathBuf::from("review.md"),
+        });
+        two_workers.workers.insert(
+            "reviewer".to_owned(),
+            WorkerRunState {
+                task: None,
+                workspace_id: Some("workspace-2".to_owned()),
+                pane_id: Some("pane-2".to_owned()),
+                agent_id: None,
+                agent_session: None,
+                worktree_path: None,
+                adopted: false,
+                launch_checkpoint: Default::default(),
+                lifecycle: WorkerLifecycle::Running,
+            },
+        );
+        let metadata = HookMetadata {
+            worker_status: BTreeMap::from([
+                ("builder".to_owned(), "idle".to_owned()),
+                ("reviewer".to_owned(), "done".to_owned()),
+            ]),
+            ..HookMetadata::default()
+        };
+
+        let reconciled = reconcile(
+            &IncomingEvent::AgentStatusChanged {
+                pane_id: "pane-1".into(),
+                status: "idle".into(),
+            },
+            two_workers,
+            metadata,
+        );
+
+        assert!(!reconciled
+            .actions
+            .iter()
+            .any(|action| matches!(action, ReconciliationAction::Notify { title, .. } if title == "Team complete")));
+    }
+
+    #[test]
+    fn status_flip_does_not_consume_pending_attention() {
+        let metadata = HookMetadata {
+            attention_pending: BTreeMap::from([("builder".to_owned(), true)]),
+            ..HookMetadata::default()
+        };
+
+        let reconciled = reconcile(
+            &IncomingEvent::AgentStatusChanged {
+                pane_id: "pane-1".into(),
+                status: "working".into(),
+            },
+            state(),
+            metadata,
+        );
+
+        assert_eq!(
+            reconciled.metadata.attention_pending.get("builder"),
+            Some(&true)
+        );
+        // Pending attention stays observable on every publish until acked.
+        assert!(reconciled.actions.iter().any(|action| matches!(
+            action,
+            ReconciliationAction::PublishMetadata {
+                attention: true,
+                ..
+            }
+        )));
     }
 
     #[test]
