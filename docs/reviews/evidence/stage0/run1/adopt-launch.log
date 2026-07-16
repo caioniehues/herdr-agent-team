@@ -1,0 +1,2 @@
+
+$ /home/caio/.local/bin/herdr pane run w1M:p1 codex\ --dangerously-bypass-approvals-and-sandbox

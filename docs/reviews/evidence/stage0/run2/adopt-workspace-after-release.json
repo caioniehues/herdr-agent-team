@@ -1,0 +1,3 @@
+
+$ /home/caio/.local/bin/herdr workspace get w1S
+{"id":"cli:workspace:get","result":{"type":"workspace_info","workspace":{"active_tab_id":"w1S:t1","agent_status":"working","focused":false,"label":"stage0-run2-1784132359-adopt","number":6,"pane_count":1,"tab_count":1,"workspace_id":"w1S"}}}

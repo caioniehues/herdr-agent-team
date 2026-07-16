@@ -1,0 +1,3 @@
+
+$ /home/caio/.local/bin/herdr wait agent-status w1M:p1 --status idle --timeout 90000
+{"event":"pane.agent_status_changed","data":{"pane_id":"w1M:p1","workspace_id":"w1M","agent_status":"idle","agent":"codex"}}

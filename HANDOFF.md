@@ -1,142 +1,104 @@
-# HANDOFF — next session orientation
+# Handoff — PIVOT to herdmates (ADR-0012); foundation in progress
 
-Last updated 2026-07-15 (post research wave + docs overhaul).
+Updated 2026-07-16, after the pivot grilling session with Caio.
 
-## Read first
+## What changed
 
-1. `docs/spec.md` — v1 spec; §8 = post-v1 roadmap (research-backed wave),
-   §9 = authority-tagged verified facts.
-2. `docs/adr/0001–0011` — locked decisions + why. New evidence → new ADR,
-   ask Caio first. ADR-0010 (evidence hierarchy) and ADR-0011 (socket
-   backend) are the newest.
-3. `CONTEXT.md` — vocabulary. `docs/agents/research.md` — research rules
-   (ctx7 first; never assume; verify inherited claims).
+The project direction pivoted (decision record: `docs/adr/0012-pivot-to-herdmates.md`
+— read it FIRST, it contains the full context, verified facts, and every
+decision). One-paragraph version:
 
-## Skills to invoke (coordinator session)
+Claude Code native agent teams own orchestration from now on — we stop
+building our own (Caio: "no point reinventing the wheel; it will be
+worse"). This repo becomes **herdmates**: (1) a **shim** ("teammux") that
+fakes tmux inside herdr panes so native split-pane teammates land as real
+herdr panes, (2) an **agent board** (sidebar tokens first, TUI plugin pane
+later), (3) a **focus pane** for the human (one next action + decision
+queue, file contract at `~/.local/share/herdmates/focus.md`). Old frontier
+#66–#83 closed wontfix; zero install base assessed, no maintenance
+backlog.
 
-Invoke these Claude Code skills at the named moments — don't rediscover them:
+## Foundation checklist (execution order, ADR-0012 §Execution)
 
-- **`/planning-with-files`** — FIRST action of any wave/multi-step session:
-  restores `task_plan.md`/`findings.md`/`progress.md` context, then keep the
-  plan current per phase. Rewrite `task_plan.md` for the new wave (old
-  completed plans get overwritten, not appended).
-- **`/herdr`** — before any pane/workspace/wait/`pane run` operation:
-  current CLI contract (check `HERDR_ENV=1`, read IDs from JSON, `--no-focus`
-  splits, paste-Enter nudge = empty `pane run ""`). Pair with
-  **`/herdr-plugins`** when a flow touches other installed plugins
-  (worktree.created races, stray shell workspaces).
-- **`skills/god/SKILL.md`** (this repo, shipped v0.8.0) — the coordination
-  playbook: wait/inbox/report/msg verbs with exit codes, brief-as-contract
-  template, monitoring discipline, failure triage, merge/release flow. It is
-  the distilled form of the memory rules; follow it over ad-hoc habit.
-- **`/find-docs`** (ctx7) — before implementing against ANY external
-  API/repo (herdr upstream verbs, crates). Never train-data guessing;
-  upstream source second, live behavior decisive.
-- **`/code-review`** — coordinator-side review of a branch/PR when a pane
-  reviewer isn't warranted; for worker PRs prefer a claude pane reviewer
-  (memory rule: no Agent-tool teammates in this repo).
-- **`/verify`** — before committing any coordinator-authored nontrivial
-  change: drive the real flow (the post-release `plugin unlink`+`link` IS
-  the release smoke test).
-- Workers CAN be skill-driven, both agents (live-verified 2026-07-15):
-  claude panes load user-level `~/.claude/skills` (slash invocation);
-  codex 0.144.4 invokes the same skills via `$<skill-name>` (`$` opens its
-  skill picker; slash fails — separate surfaces). Reference:
-  `skills/codex-prompting/SKILL.md`. Default remains briefs
-  (`briefs/*.md`) + generated worker protocols; inlining skill content is
-  optional hardening. Delegation
-  substrate: this plugin's `spawn`/`msg` + herdr panes — for implementation
-  work do NOT use `/implement`/`/tdd` inline; the coordinator never writes
-  code (memory rule delegate-to-codex-workers).
+1. [ ] Gate `integrate/program-wave1` centrally (fmt/clippy/tests, worktree
+       `~/Projects/herdr-agent-team-loops/integration`), bump manifest
+       version → 1.1.0, merge → main, tag `v1.1.0`, push (Caio authorized
+       2026-07-16 in the pivot session).
+2. [ ] Commit pivot docs on main (ADR-0012, CONTEXT.md, HANDOFF.md,
+       CLAUDE.md, program learnings + docs/reviews records).
+3. [ ] Close issues #66–#83 wontfix with pivot comment linking ADR-0012
+       (#77/#79: comment "moot under pivot").
+4. [ ] Delete empty batch worktrees + branches: fix-teardown-batch,
+       fix-hook-batch, fix-godcli-batch, fix-msg-batch (under
+       `~/Projects/herdr-agent-team-loops/`).
+5. [ ] Rename repo → `caioniehues/herdmates` (`gh repo rename`), then
+       first 2.0.0-line commit: manifest id `herdmates`, name "Herdmates",
+       description "Claude Code teammates, native in herdr".
 
-## State
+## Next work after foundation
 
-- **v1 SHIPPED + PUBLISHED** (2026-07-15, Caio's go-ahead):
-  https://github.com/caioniehues/herdr-agent-team — public, topic
-  `herdr-plugin`, tag `v0.1.0`, marketplace-listed. Pushes to `main` are
-  releases: gate (fmt/clippy/tests), bump manifest version for behavior
-  changes, tag, never push without Caio's ask.
-- DoD passed 2026-07-15 (run 2, limux repo, live): spawn, worktrees,
-  pointer injection, msg round-trip, kill preserving dirty worktree.
-- `team adopt` shipped (`10a855a`, closes #1): existing panes become full
-  workers; ADR-0009, spec §12.
-- **Herdr is OPEN SOURCE** — github.com/ogulcancelik/herdr (Rust core,
-  vendored Zig libghostty-vt). The old "closed-source" note was an
-  unverified assumption, corrected 2026-07-15 (ADR-0010). Local clone:
-  `~/Projects/herdr-upstream`. Schema-snapshot discipline stays as drift
-  detection (`docs/herdr-api-schema.snapshot.json`, protocol 16).
-- **Research wave 2026-07-15** (4 reports in `docs/research/`): upstream
-  architecture + claims audit, integration opportunities, herdr-claude-teams
-  competitor analysis (verdict: pattern-source, not threat), awesome-herdr
-  ecosystem survey (133 entries). Key corrections live in spec §9; roadmap
-  rewritten in spec §8 from this evidence (grilled decisions Q1–Q6 with
-  Caio, 2026-07-15).
-- Central gate green at last commit: build, fmt, clippy `-D warnings`,
-  98 tests.
+1. **Recon spike** (shim go/no-go, ~1 worker-day): logging `tmux` wrapper
+   first on PATH in a REAL tmux session; run a real native team
+   (`CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`, `teammateMode: tmux`);
+   capture complete argv inventory; map verbs → herdr CLI. Kill signals:
+   control mode (`tmux -C`) or unmappable verbs. Shim death ≠ pivot death:
+   boards work over in-process teams; fallback includes upstream feature
+   request for pluggable `teammateMode` backend.
+2. **D1 sidebar-token agent board**: hook pumps team-file state
+   (`~/.claude/teams/*/config.json` + `inboxes/*.json`) into
+   `pane report-metadata --token …`; ship `[ui.sidebar.agents] rows`
+   config. Exercises all data plumbing D3 reuses.
+3. **D3 focus pane**: plugin pane rendering the focus file; companion
+   atomizer skill (human-harness pattern, copy not depend).
+4. **D2 rich TUI board / shim build** per spike verdict.
 
-## NEXT steps (in order)
+## Key verified facts for the new work (2026-07-16, full citations in ADR-0012)
 
-0. **v0.7.0 + v0.8.0 RELEASED 2026-07-15** — waves 5+6 COMPLETE.
-   Wave 5 (#22 one HerdrApi seam + shared FakeHerdr; #14 spawn --resume
-   with launch checkpoints; #17 parallel launch + lazy agent-info; flock'd
-   cross-process run.toml). Wave 6 (#23 wait verbs exits 0-4 over durable
-   truth; #24 inbox/report read-marks + STOPPED-NOT-DONE + zero-ceremony
-   env + msg fan-out; #25 skills/god/SKILL.md). 151 tests. Learnings:
-   `docs/learnings/wave5-2026-07-15.md`, `wave6-2026-07-15.md` — READ THEM
-   (gate 15x rule for threaded PRs, live-DoD discipline, version-bump trap).
-   CI: repo-specific review gate + issue triage workflows live; 5 triage
-   labels created. NEXT candidates: #28 (unlocked run.toml writers — same
-   bug class as PR #27 MAJOR-3), #29 (stuck-pending adoptee), #16 (relink
-   docs), then #8 socket backend (seam ready), #9 restart + previews.
-0. **v0.6.0 RELEASED 2026-07-15** (#7): native board pane = the human's
-   CONTROL DECK (variant-D prototype verdict; branch prototype/board-pane is
-   the primary source). `[[panes]] board` + open-board action + report: link
-   handler; real per-row verbs incl. NEW `kill <run> --worker <name>`;
-   optional worker `task` field; deps deferred. Collection behind
-   `BoardCollector` trait for #8's socket swap. 128 tests. Architecture
-   consolidation pass scoped next (HerdrApi seam, before #8).
-1. **v0.5.0 RELEASED 2026-07-15** (third release today): #6 schema-gated
-   metadata tokens (`src/metadata.rs` maps team facts onto the REAL 0.7.3
-   tokens — title/display_agent/custom_status/state_label; runtime
-   `api schema --json` gate with fallback; probe results on issue #6) +
-   aggregate notifications (once-only team-complete / blocked-beyond-threshold
-   with all-event sweep / worker-exit / explicit `msg --attention`).
-   123 tests. NEXT: #7 board pane — /prototype the layout FIRST (Caio's
-   instruction), then ticket. Then #8 socket backend (consider architecture
-   pass before it: HerdrApi duplicate, FakeHerdr x4, hook.rs seam).
-1. **v0.4.0 RELEASED 2026-07-15** (same day as v0.3.0 hook-correctness
-   wave): #5 full `agent_session {source,agent,kind,value}` +
-   `HerdrSessionIdentity` (HERDR_SOCKET_PATH/HERDR_SESSION) persisted per
-   run at spawn/adopt, legacy run.toml still loads; #15 generated protocols
-   now encode the git contract by worktree flag (worktree workers
-   commit/push/PR their own branch; shared-tree and adopted panes stay
-   no-git). 117 tests. Open follow-ups: #14 spawn dies midway (pending
-   lifecycles), #16 manifest changes need plugin unlink+link, #17 serial
-   90s agent-info timeout delays worker N+1.
-4. **Roadmap step 4 / Issue #7:** native board pane (`[[panes]]` + action +
-   keybinds + link handler).
-5. **Roadmap step 5 / Issue #8:** direct socket backend behind `HerdrApi`
-   (ADR-0011); #2 team wait rides it.
-6. **Roadmap step 6 / Issue #9:** run-scoped broadcast, bounded previews, and
-   conservative restart (blocked by #5).
-7. **Roadmap step 7:** later/optional declarative layouts, Kitty-graphics
-   board enrichment, run-history browsing, tested opencode/gemini launchers,
-   and limux backend extraction.
+- `teammateMode` split-pane = tmux + iTerm2 only, hardcoded; Ghostty
+  explicitly unsupported; no pluggable backend. Teams experimental
+  (`CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS`). Teammates = full independent
+  `claude` sessions. No external-session adoption; membership fixed at
+  spawn in `~/.claude/teams/{team}/config.json`; mailboxes JSON under
+  `inboxes/`.
+- Herdr has zero tmux surface (no `TMUX`, no control mode, "Herdr is not
+  tmux"). Child processes create panes only via `herdr pane split
+  --current` over `HERDR_SOCKET_PATH`.
+- Herdr 0.7.4 observability surface: plugin panes
+  (overlay/split/tab/zoomed, `plugin.pane.open`), popup panes
+  (session-modal, NO pane id, invisible to pane/agent APIs — never the
+  board's home), `pane report-metadata` (tokens ≤80 chars, ≤16/report,
+  ≤32/pane, TTL, seq; display-only), `session.snapshot`,
+  `workspace.metadata_updated` + `layout.updated` events,
+  `terminal session observe`. Native non-terminal plugin UI = future,
+  does not exist.
+- Unreleased in upstream docs/next: per-token sidebar styling
+  (fg/bold/dim) — relevant to D1 polish.
 
-Work them via codex pane workers (never implement in this repo from the
-coordinator — memory rule), one ticket per worker worktree. Git contract
-(2026-07-15): worktree workers commit/push/PR their own branch; coordinator
-reviews, runs the shared gate once centrally, merges, and releases on Caio's
-word.
+## State inherited from the orchestration line (context, not tasks)
 
-## Context that doesn't fit the docs
+- v1.0.0 released (`aa0c0e0`). Implementation-review program #46–#58 fully
+  executed 2026-07-15 (Stage 0 twice-run E2E, 5 RED-first loops GREEN, 6
+  review slices, Stage 3 vocabulary) + wave fixes #59/#61–#65. All on
+  `integrate/program-wave1`: 197 tests, fmt/clippy clean — becomes v1.1.0
+  (tombstone release of the orchestration line; 2.0.0 = pivot work).
+- Reports: `docs/reviews/loops/`, `docs/reviews/slices/`; Stage 0 evidence
+  `docs/reviews/evidence/stage0/`; learnings
+  `docs/learnings/program-execution-2026-07-15.md` (worker traps: claude
+  startup crash, Enter-swallow, gh flag no-ops — still relevant to future
+  pane workers).
+- `docs/reviews/frontier-plan-2026-07-16.md` is SUPERSEDED by ADR-0012
+  (tickets closed, worktrees deleted). Keep as record only.
+- Research branch `research/current-upstream-runtime-constraints`
+  (worktree `/tmp/herdr-agent-team-constraints`, commit `8e5f105`) stays
+  unmerged/unpushed — reference material; do not silently publish.
 
-- Marketplace survey (175 plugins) + awesome-herdr survey conclusions:
-  `docs/marketplace-notes.md`; raw verdicts in the two survey JSON/report
-  files. Competitive watch: herdr-factory, dual-author, herdr-orchestrator,
-  Shepherd, herdr-symphony, herdr-factory-loop-skill, herdr-claude-teams.
-- Caio runs god sessions inside herdr; research/analysis fan-outs run as
-  **visible herdr pane teammates** (codex yolo), never invisible Agent-tool
-  subagents (2026-07-15 incident: mailbox-spawned agents never started).
-- Watch item: optional Claude-native visible-team compatibility mode
-  (herdr-claude-teams proved feasibility) — separate experiment, never core.
+## Standing rules unchanged
+
+- Pushes to main are releases — every push gated (fmt/clippy/tests),
+  version bump on behavior change, tag releases, Caio's word required.
+- Delegate implementation to claude workers in herdr panes; coordinator
+  never implements in this repo. Fresh claude panes crash intermittently
+  at startup (config-borne, unsolved) — verify alive before briefing.
+- Verify external claims via ctx7/upstream source before building
+  (ADR-0010 evidence hierarchy). The local `~/Projects/herdr-upstream`
+  clone goes stale — `git pull` before citing it.

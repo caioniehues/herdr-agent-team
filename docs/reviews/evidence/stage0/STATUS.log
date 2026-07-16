@@ -1,0 +1,25 @@
+2026-07-15T00:00:00+01:00 stage0: contract read; preparing scripted live E2E
+2026-07-15T17:15:05+01:00 run1: preflight and version capture
+2026-07-15T17:15:05+01:00 run1: spawn file spec with worktrees and both providers
+2026-07-15T17:16:18+01:00 run1: resume idempotency probe
+2026-07-15T17:16:18+01:00 run1: msg immediate and queued drain
+2026-07-15T17:16:18+01:00 run1: worker reports pointer push and team wait
+2026-07-15T17:16:21+01:00 run1: adopt release probe
+2026-07-15T17:16:30+01:00 run1: dirty worktree kill and cleanup
+2026-07-15T17:16:49+01:00 run1: preflight and version capture
+2026-07-15T17:16:49+01:00 run1: spawn file spec with worktrees and both providers
+2026-07-15T17:18:23+01:00 run1: resume idempotency probe
+2026-07-15T17:18:23+01:00 run1: msg immediate and queued drain
+2026-07-15T17:18:23+01:00 run1: worker reports pointer push and team wait
+2026-07-15T17:18:46+01:00 run1: adopt release probe
+2026-07-15T17:18:58+01:00 run1: dirty worktree kill and cleanup
+2026-07-15T17:18:58+01:00 run1: run complete
+2026-07-15T17:19:19+01:00 run2: preflight and version capture
+2026-07-15T17:19:19+01:00 run2: spawn file spec with worktrees and both providers
+2026-07-15T17:20:53+01:00 run2: resume idempotency probe
+2026-07-15T17:20:53+01:00 run2: msg immediate and queued drain
+2026-07-15T17:20:53+01:00 run2: worker reports pointer push and team wait
+2026-07-15T17:21:24+01:00 run2: adopt release probe
+2026-07-15T17:21:36+01:00 run2: dirty worktree kill and cleanup
+2026-07-15T17:21:36+01:00 run2: run complete
+2026-07-15T17:23:46+01:00 stage0: final validation complete

@@ -1,0 +1,2 @@
+
+$ /home/caio/Projects/herdr-agent-team/target/debug/herdr-agent-team msg codex-worker run1\ queued\ message\ from\ god --run /home/caio/.local/state/herdr/plugins/caioniehues.agent-team/runs/stage0-run1-1784132209-1784132209809

@@ -1,0 +1,2 @@
+warning: worker 'codex-worker' launched in pane 'w1R:p1', but Herdr did not return agent_session.value before timeout; continuing without agent id
+team run created: /home/caio/.local/state/herdr/plugins/caioniehues.agent-team/runs/stage0-run2-1784132359-1784132359421

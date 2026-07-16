@@ -1,0 +1,25 @@
+name = "stage0-run2-1784132359"
+topology = "star"
+cwd = "/home/caio/Projects/herdr-agent-team"
+setup = ["test -f Cargo.toml"]
+
+[god]
+target = "self"
+
+[[workers]]
+name = "claude-worker"
+agent = "claude"
+role = "live e2e worker"
+task = "prove immediate pane submission and report push"
+worktree = true
+branch = "stage0/stage0-run2-1784132359-claude"
+brief = "/home/caio/Projects/herdr-agent-team/docs/reviews/evidence/stage0/run2/claude-brief.md"
+
+[[workers]]
+name = "codex-worker"
+agent = "codex"
+role = "live e2e worker"
+task = "prove queued outbox drain and report push"
+worktree = true
+branch = "stage0/stage0-run2-1784132359-codex"
+brief = "/home/caio/Projects/herdr-agent-team/docs/reviews/evidence/stage0/run2/codex-brief.md"

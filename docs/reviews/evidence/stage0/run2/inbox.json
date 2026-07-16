@@ -1,0 +1,3 @@
+
+$ /home/caio/Projects/herdr-agent-team/target/debug/herdr-agent-team inbox --run /home/caio/.local/state/herdr/plugins/caioniehues.agent-team/runs/stage0-run2-1784132359-1784132359421 --json
+[{"worker":"claude-worker","report_present":true,"report_mtime_ms":1784132439986,"attention":false,"read":false,"stopped_not_done":false},{"worker":"codex-worker","report_present":true,"report_mtime_ms":1784132481276,"attention":false,"read":false,"stopped_not_done":false}]

@@ -1,0 +1,19 @@
+'claude' '--dangerously-skip-permissions'
+~/.herdr/worktrees/herdr-agent-team/stage0-stage0-run1-1784132105-claude                                                                                                                                                                                                                                                 17:15:06
+❯ 'claude' '--dangerously-skip-permissions'
+Read your brief at /home/caio/Projects/herdr-agent-team/docs/reviews/evidence/stage0/run1/claude-brief.md and execute it fully. Read the generated team protocol at /home/caio/.local/state/herdr/plugins/caioniehues.agent-team/runs/stage0-run1-1784132105-1784132105879/protocols/claude-worker.md.
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  WARNING: Claude Code running in Bypass Permissions mode
+
+  In Bypass Permissions mode, Claude Code will not ask for your approval before running potentially dangerous commands.
+  This mode should only be used in a sandboxed container/VM that has restricted internet access and can easily be restored if damaged.
+
+  By proceeding, you accept all responsibility for actions taken while running in Bypass Permissions mode.
+
+  https://code.claude.com/docs/en/security
+
+  ❯ 1. No, exit
+    2. Yes, I accept
+
+  Enter to confirm · Esc to cancel

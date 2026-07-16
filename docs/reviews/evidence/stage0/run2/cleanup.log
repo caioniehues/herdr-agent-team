@@ -1,0 +1,7 @@
+{"id":"cli:workspace:close","result":{"type":"ok"}}
+{"error":{"code":"workspace_not_found","message":"workspace w1S not found"},"id":"cli:workspace:close"}
+{"error":{"code":"workspace_not_found","message":"workspace w1P not found"},"id":"cli:workspace:close"}
+{"error":{"code":"workspace_not_found","message":"workspace w1R not found"},"id":"cli:workspace:close"}
+{"id":"cli:workspace:close","result":{"type":"ok"}}
+Deleted branch stage0/stage0-run2-1784132359-claude (was aa0c0e0).
+Deleted branch stage0/stage0-run2-1784132359-codex (was aa0c0e0).

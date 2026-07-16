@@ -1,0 +1,242 @@
+
+$ /home/caio/.local/bin/herdr pane read w1A:pK --source recent-unwrapped --lines 240
+    189 +mkdir -p "$OUT/outbox-before-drain"
+    190 +cp -a "$RUN_DIR/outbox/." "$OUT/outbox-before-drain/" 2>/dev/null || true
+    191 +run_logged "$HERDR" pane read "${CREATED_WORKSPACES[0]}:p1" --source recent-unwrapped --lines 160 > "$OUT/claude-pane-midturn.txt" || true
+    192 +run_logged "$HERDR" pane read "${CREATED_WORKSPACES[1]}:p1" --source recent-unwrapped --lines 160 > "$OUT/codex-pane-midturn.txt" || true
+    193 +
+    194 +ping "worker reports pointer push and team wait"
+    195 +run_logged "$BIN" wait --until all-reports --run "$RUN_DIR" --timeout 180 --json | tee "$OUT/wait-all-reports.json" || true
+    196 +sleep 3
+    197 +cp "$RUN_DIR/run.toml" "$OUT/run-after-reports.toml"
+    198 +cp -a "$RUN_DIR/inbox" "$OUT/inbox-after-reports"
+    199 +mkdir -p "$OUT/outbox-after-drain"
+    200 +cp -a "$RUN_DIR/outbox/." "$OUT/outbox-after-drain/" 2>/dev/null || true
+    201 +run_logged "$HERDR" pane read "${CREATED_WORKSPACES[0]}:p1" --source recent-unwrapped --lines 240 > "$OUT/claude-pane-final.txt" || true
+    202 +run_logged "$HERDR" pane read "${CREATED_WORKSPACES[1]}:p1" --source recent-unwrapped --lines 240 > "$OUT/codex-pane-final.txt" || true
+    203 +run_logged "$HERDR" pane read "${HERDR_PANE_ID}" --source recent-unwrapped --lines 240 > "$OUT/god-pane-after-reports.txt" || true
+    204 +run_logged "$BIN" inbox --run "$RUN_DIR" --json | tee "$OUT/inbox.json" || true
+    205 +
+    206 +ping "adopt release probe"
+    207 +ADOPT_CREATE=$($HERDR workspace create --cwd "$ROOT" --label "${TEAM}-adopt" --no-focus)
+    208 +printf '%s\n' "$ADOPT_CREATE" > "$OUT/adopt-workspace-create.json"
+    209 +ADOPT_WORKSPACE=$(printf '%s\n' "$ADOPT_CREATE" | jq -r '.result.workspace.workspace_id')
+    210 +ADOPT_PANE=$(printf '%s\n' "$ADOPT_CREATE" | jq -r '.result.workspace.active_pane_id // .result.workspace.pane_id // empty')
+    211 +if [[ -z "$ADOPT_PANE" ]]; then
+    212 +  ADOPT_PANE=$($HERDR pane list --workspace "$ADOPT_WORKSPACE" | jq -r '.result.panes[0].pane_id')
+    213 +fi
+    214 +run_logged "$HERDR" pane run "$ADOPT_PANE" "codex --dangerously-bypass-approvals-and-sandbox" | tee "$OUT/adopt-launch.log" || true
+    215 +run_logged "$HERDR" wait agent-status "$ADOPT_PANE" --status idle --timeout 90000 | tee "$OUT/adopt-wait-idle.log" || true
+    216 +run_logged "$BIN" adopt "$ADOPT_PANE" --name adopted-worker --role "live adopted worker" --brief "$ADOPT_BRIEF" --run "$RUN_DIR" | tee "$OUT/adopt-fi
+         rst.log" || true
+    217 +run_logged "$BIN" adopt "$ADOPT_PANE" --name adopted-worker --role "live adopted worker" --brief "$ADOPT_BRIEF" --run "$RUN_DIR" | tee "$OUT/adopt-se
+         cond.log" || true
+    218 +sleep 8
+    219 +cp "$RUN_DIR/run.toml" "$OUT/run-after-adopt.toml"
+    220 +run_logged "$BIN" kill "$RUN_DIR" --worker adopted-worker | tee "$OUT/release.log" || true
+    221 +cp "$RUN_DIR/run.toml" "$OUT/run-after-release.toml"
+    222 +run_logged "$HERDR" workspace get "$ADOPT_WORKSPACE" > "$OUT/adopt-workspace-after-release.json" || true
+    223 +run_logged "$HERDR" pane read "$ADOPT_PANE" --source recent-unwrapped --lines 200 > "$OUT/adopt-pane-after-release.txt" || true
+    224 +
+    225 +ping "dirty worktree kill and cleanup"
+    226 +DIRTY_PATH=${WORKTREE_PATHS[0]}
+    227 +printf '%s\n' "stage0 deliberate dirty marker $RUN_NAME" > "$DIRTY_PATH/stage0-dirty-marker.txt"
+    228 +git -C "$DIRTY_PATH" status --short > "$OUT/dirty-worktree-status.txt"
+    229 +set +e
+    230 +"$BIN" kill "$RUN_DIR" --remove-worktrees > "$OUT/kill-dirty-refusal.log" 2>&1
+    231 +DIRTY_KILL_RC=$?
+    232 +set -e
+    233 +printf 'dirty_kill_rc=%s\n' "$DIRTY_KILL_RC" >> "$OUT/kill-dirty-refusal.log"
+    234 +run_logged "$BIN" kill "$RUN_DIR" | tee "$OUT/kill-final.log" || true
+    235 +cp "$RUN_DIR/run.toml" "$OUT/run-after-kill.toml"
+    236 +run_logged "$HERDR" workspace list > "$OUT/workspaces-after-kill.json"
+    237 +run_logged "$HERDR" pane list --workspace "$HERDR_WORKSPACE_ID" > "$OUT/god-workspace-panes-after-kill.json"
+    238 +
+    239 +ping "run complete"
+    240 +printf '%s\n' "$RUN_DIR" > "$OUT/RUN_DIR"
+    241 +printf 'E2E_RUN_COMPLETE %s\n' "$RUN_NAME" | tee -a "$TRANSCRIPT"
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• Run 1 is live now. Preflight syntax/build checks passed, and the script is in the provider-spawn/report window; it writes step pings to STATUS.log and
+  retains partial artifacts even if an external step blocks.
+
+
+› run1 codex started
+
+
+• That confirms the Codex worker→god msg reached this pane during run 1. I’m correlating it with the retained run artifacts now; the script exited sooner than
+  the full flow should, so I’m locating the exact stopping command before starting run 2.
+
+• Ran rtk tail -120 /home/caio/Projects/herdr-agent-team/docs/reviews/evidence/stage0/run1/transcript.log
+  │ rtk tail -40 /home/caio/Projects/herdr-agent-team/docs/reviews/evidence/stage0/STATUS.log
+  │ rtk rg --files /home/caio/Projects/herdr-agent-team/docs/reviews/evidence/stage0/run1
+  │ … +2 lines
+  └
+    $ /home/caio/.local/bin/herdr workspace list
+    … +18 lines (ctrl + t to view transcript)
+    /home/caio/Projects/herdr-agent-team/docs/reviews/evidence/stage0/run1/transcript.log
+    /usr/bin/sed: can't read /home/caio/Projects/herdr-agent-team/docs/reviews/evidence/stage0/run1/cleanup.log: No such file or directory
+
+• Ran rtk ps aux | rtk rg 'e2e.sh run1|target/debug/herdr-agent-team spawn|stage0-run1' || true
+  │ rtk herdr workspace list
+  │ rtk ls -l /home/caio/Projects/herdr-agent-team/docs/reviews/evidence/stage0/run1/spawn.log
+  └ {"id":"cli:workspace:list","result":{"type":"workspace_list","workspaces":
+    [{"active_tab_id":"w1A:t1","agent_status":"working","focused":true,"label":"herdr-agent-team","number":1,"pane_count":2,"tab_count":1,"workspace_id":"w1A"
+    … +11 lines (ctrl + t to view transcript)
+    {"active_tab_id":"w1E:t1","agent_status":"working","focused":false,"label":"codex-worker","number":5,"pane_count":1,"tab_count":1,"workspace_id":"w1E"}]}}
+    644  /home/caio/Projects/herdr-agent-team/docs/reviews/evidence/stage0/run1/spawn.log  0B
+
+• Ran rtk proxy rg -l 'stage0-run1-1784132105' /home/caio/.local/state/herdr/plugins/caioniehues.agent-team/runs -g run.toml | tail -1 | xargs -r sed -n
+  │ '1,240p'
+  │ rtk herdr pane list --workspace w1C
+  │ … +1 lines
+  └ god_pane_id = "w1A:pK"
+    lifecycle = "active"
+    … +82 lines (ctrl + t to view transcript)
+    {"max_offset_from_bottom":10,"offset_from_bottom":0,"viewport_rows":63},"state_labels":{"working":"stage0-run1-1784132105/live e2e
+    worker"},"tab_id":"w1E:t1","terminal_id":"term_656a8a06898ec8","workspace_id":"w1E"}],"type":"pane_list"}}
+
+• Ran OUT=/home/caio/Projects/herdr-agent-team/docs/reviews/evidence/stage0/run1
+  │ RUN=$(rtk proxy rg -l 'stage0-run1-1784132105' /home/caio/.local/state/herdr/plugins/caioniehues.agent-team/runs -g run.toml | tail -1 | xargs dirname)
+  │ rtk herdr pane read w1C:p1 --source recent-unwrapped --lines 240 > "$OUT/aborted-claude-pane.txt"
+  │ … +12 lines
+  └ {"id":"cli:workspace:close","result":{"type":"ok"}}
+    {"id":"cli:workspace:close","result":{"type":"ok"}}
+    … +6 lines (ctrl + t to view transcript)
+    ,"worktree":{"checkout_path":"/home/caio/Projects/herdr-agent-team","is_linked_worktree":false,"repo_key":"/home/caio/Projects/
+    herdr-agent-team/.git","repo_name":"herdr-agent-team","repo_root":"/home/caio/Projects/herdr-agent-team"}}]}}
+
+• Ran rtk sed -n '1,240p' /home/caio/Projects/herdr-agent-team/docs/reviews/evidence/stage0/run1/aborted-claude-pane.txt
+  │ rtk sed -n '1,240p' /home/caio/Projects/herdr-agent-team/docs/reviews/evidence/stage0/run1/aborted-codex-pane.txt
+  └ 'claude' '--dangerously-skip-permissions'
+    ~/.herdr/worktrees/herdr-agent-team/stage0-stage0-run1-1784132105-claude
+    … +99 lines (ctrl + t to view transcript)
+
+      gpt-5.6-sol low · ~/.herdr/worktrees/herdr-agent-team/stage0-stage0-run1-1784132105-codex · Context 95% left · Context 5% used · weekly 25% left
+
+• Ran rtk chmod +x /home/caio/Projects/herdr-agent-team/docs/reviews/evidence/stage0/e2e.sh
+  │ rtk bash -n /home/caio/Projects/herdr-agent-team/docs/reviews/evidence/stage0/e2e.sh
+  │ rtk git diff --check -- /home/caio/Projects/herdr-agent-team/docs/reviews/evidence/stage0/e2e.sh
+  │ … +1 lines
+  └ spawn_rc=1
+    run_dir=/home/caio/.local/state/herdr/plugins/caioniehues.agent-team/runs/stage0-run1-1784132105-1784132105879
+    … +52 lines (ctrl + t to view transcript)
+    /home/caio/Projects/herdr-agent-team/docs/reviews/evidence/stage0/e2e.sh: line 227: /home/caio/.herdr/worktrees/herdr-agent-team/
+    stage0-stage0-run1-1784132105-claude/stage0-dirty-marker.txt: No such file or directory
+
+• Edited docs/reviews/evidence/stage0/e2e.sh (+5 -1)
+     77    for worktree in "${WORKTREE_PATHS[@]}"; do
+     78 +    while IFS= read -r workspace; do
+     79 +      [[ -n "$workspace" ]] && "$HERDR" workspace close "$workspace" >> "$OUT/cleanup.log" 2>&1
+     80 +    done < <("$HERDR" workspace list | jq -r --arg path "$worktree" '.result.workspaces[] | select(.worktree.checkout_path == $path) | .workspace_id'
+         )
+     81      if [[ -d "$worktree" ]]; then
+        ⋮
+     92  [claude]
+     90 -command = ["claude", "--dangerously-skip-permissions"]
+     93 +command = ["claude"]
+     94  submit_verify = true
+        ⋮
+    151    printf 'plugin_head='; git -C "$ROOT" rev-parse HEAD
+    152 +  printf 'plugin_manifest_version='; sed -n 's/^version = "\([^"]*\)"/\1/p' "$ROOT/herdr-plugin.toml" | head -1
+    153    printf '%s\n' 'git_status_short_begin'; git -C "$ROOT" status --short; printf '%s\n' 'git_status_short_end'
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• The first attempt exposed and retained a genuine provider setup blocker: Claude’s bypass-permissions launcher stopped at its first-run responsibility
+  confirmation, while Codex launched and its worker→god message succeeded. I cleaned only the attempt’s workspaces/worktrees, changed Claude to its normal
+  launcher (the shipped default), and extended cleanup to include marketplace hook-created worktree workspaces. I’m restarting run 1 fresh; the aborted
+  attempt remains as contrary evidence rather than being hidden.
+
+
+› run1 codex started
+
+
+
+› run1 claude started
+
+
+• Waited for background terminal · /home/caio/Projects/herdr-agent-team/docs/reviews/evidence/stage0/e2e.sh run1
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• Both provider workers have now independently reached the god pane in the fresh run 1 (run1 codex started and run1 claude started). That clears the earlier
+  Claude launch blocker under the shipped normal launcher; the run is now in its immediate/queued message and report-drain phase.
+
+• Ran rtk tail -30 /home/caio/Projects/herdr-agent-team/docs/reviews/evidence/stage0/STATUS.log
+  │ rtk tail -80 /home/caio/Projects/herdr-agent-team/docs/reviews/evidence/stage0/run1/spawn.log
+  │ rtk ps aux | rtk rg 'e2e.sh run1|herdr-agent-team spawn' || true
+  └ 2026-07-15T00:00:00+01:00 stage0: contract read; preparing scripted live E2E
+    2026-07-15T17:15:05+01:00 run1: preflight and version capture
+    … +6 lines (ctrl + t to view transcript)
+    2026-07-15T17:16:49+01:00 run1: preflight and version capture
+    2026-07-15T17:16:49+01:00 run1: spawn file spec with worktrees and both providers
+
+
+› run1 claude report finalized
+
+
+
+› run1 codex report finalized
+
+
+
+› [team stage0-run1-1784132209] codex-worker is done — report: /home/caio/.local/state/herdr/plugins/caioniehues.agent-team/runs/stage0-run1-1784132209-
+  1784132209809/inbox/codex-worker.md
+
+
+• Waited for background terminal · /home/caio/Projects/herdr-agent-team/docs/reviews/evidence/stage0/e2e.sh run1
+
+• Ran /home/caio/Projects/herdr-agent-team/docs/reviews/evidence/stage0/e2e.sh run1
+  └ spawn_rc=0
+    run_dir=/home/caio/.local/state/herdr/plugins/caioniehues.agent-team/runs/stage0-run1-1784132209-1784132209809
+    … +50 lines (ctrl + t to view transcript)
+    stage0-run1-1784132209-1784132209809
+    E2E_RUN_COMPLETE run1
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• Run 1 completed end to end. Retained evidence includes both reports, an all-reports reached verdict, Codex’s pushed report pointer, successful adopt plus
+  idempotent re-adopt, adopted-worker release, and the dirty-worktree teardown probe. I’m starting the required consecutive fresh run 2 with the same script
+  and environment.
+
+
+› run2 codex started
+
+
+
+› run2 claude started
+
+
+• Ran rtk tail -20 /home/caio/Projects/herdr-agent-team/docs/reviews/evidence/stage0/STATUS.log
+  │ rtk tail -60 /home/caio/Projects/herdr-agent-team/docs/reviews/evidence/stage0/run2/spawn.log
+  └ 2026-07-15T00:00:00+01:00 stage0: contract read; preparing scripted live E2E
+    2026-07-15T17:15:05+01:00 run1: preflight and version capture
+    … +14 lines (ctrl + t to view transcript)
+    2026-07-15T17:19:19+01:00 run2: preflight and version capture
+    2026-07-15T17:19:19+01:00 run2: spawn file spec with worktrees and both providers
+
+• Waited for background terminal · /home/caio/Projects/herdr-agent-team/docs/reviews/evidence/stage0/e2e.sh run2
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• Run 2 has reproduced both provider→god start messages. Its spawn phase is taking roughly the same ~90-second identity/checkpoint window as run 1; no new
+  blocker is visible, and the status log is current.
+
+
+› run2 claude report finalized
+
+
+
+› [team stage0-run2-1784132359] claude-worker is done — report: /home/caio/.local/state/herdr/plugins/caioniehues.agent-team/runs/stage0-run2-1784132359-
+  1784132359421/inbox/claude-worker.md
+
+
+• Waiting for background terminal (9m 38s • esc to interrupt) · 1 background terminal running · /ps to view · /stop to close
+  └ /home/caio/Projects/herdr-agent-team/docs/reviews/evidence/stage0/e2e.sh run2
+
+
+› Run /review on my current changes
+
+  gpt-5.6-sol low · ~/Projects/herdr-agent-team · Context 72% left · Context 28% used · weekly 23% left

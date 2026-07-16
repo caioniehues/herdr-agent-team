@@ -1,0 +1,20 @@
+date=2026-07-15T17:16:49+01:00
+plugin_head=aa0c0e05b0a26074e5f11328a781b41cb633f669
+plugin_manifest_version=1.0.0
+git_status_short_begin
+ M CLAUDE.md
+ M CONTEXT.md
+ M HANDOFF.md
+?? docs/reviews/
+?? findings.md
+?? progress.md
+?? task_plan.md
+git_status_short_end
+herdr 0.7.3
+2.1.210 (Claude Code)
+2.7.1 (tweakcc-fixed)
+codex-cli 0.144.4
+Linux hal 7.1.3-2-cachyos #1 SMP PREEMPT_DYNAMIC Wed, 08 Jul 2026 06:14:22 +0000 x86_64 GNU/Linux
+HERDR_BIN_PATH=/home/caio/.local/bin/herdr
+HERDR_PANE_ID=w1A:pK
+HERDR_SOCKET_PATH=/home/caio/.config/herdr/herdr.sock

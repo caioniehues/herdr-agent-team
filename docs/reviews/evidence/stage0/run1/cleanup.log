@@ -1,0 +1,10 @@
+{"id":"cli:workspace:close","result":{"type":"ok"}}
+{"error":{"code":"workspace_not_found","message":"workspace w1C not found"},"id":"cli:workspace:close"}
+{"error":{"code":"workspace_not_found","message":"workspace w1E not found"},"id":"cli:workspace:close"}
+{"id":"cli:workspace:close","result":{"type":"ok"}}
+{"error":{"code":"workspace_not_found","message":"workspace w1M not found"},"id":"cli:workspace:close"}
+{"error":{"code":"workspace_not_found","message":"workspace w1H not found"},"id":"cli:workspace:close"}
+{"error":{"code":"workspace_not_found","message":"workspace w1K not found"},"id":"cli:workspace:close"}
+{"id":"cli:workspace:close","result":{"type":"ok"}}
+Deleted branch stage0/stage0-run1-1784132209-claude (was aa0c0e0).
+Deleted branch stage0/stage0-run1-1784132209-codex (was aa0c0e0).

@@ -1,0 +1,20 @@
+
+$ /home/caio/Projects/herdr-agent-team/target/debug/herdr-agent-team status /home/caio/.local/state/herdr/plugins/caioniehues.agent-team/runs/stage0-run2-1784132359-1784132359421 --json
+{
+  "team": "stage0-run2-1784132359",
+  "lifecycle": "active",
+  "workers": [
+    {
+      "worker": "claude-worker",
+      "agent": "claude",
+      "status": "working",
+      "last_report_time_unix_secs": 1784132439
+    },
+    {
+      "worker": "codex-worker",
+      "agent": "codex",
+      "status": "working",
+      "last_report_time_unix_secs": null
+    }
+  ]
+}

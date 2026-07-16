@@ -1,0 +1,3 @@
+
+$ /home/caio/.local/bin/herdr workspace list
+{"id":"cli:workspace:list","result":{"type":"workspace_list","workspaces":[{"active_tab_id":"w1A:t1","agent_status":"working","focused":true,"label":"herdr-agent-team","number":1,"pane_count":2,"tab_count":1,"workspace_id":"w1A","worktree":{"checkout_path":"/home/caio/Projects/herdr-agent-team","is_linked_worktree":false,"repo_key":"/home/caio/Projects/herdr-agent-team/.git","repo_name":"herdr-agent-team","repo_root":"/home/caio/Projects/herdr-agent-team"}}]}}

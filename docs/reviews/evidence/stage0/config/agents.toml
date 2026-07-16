@@ -1,0 +1,11 @@
+[claude]
+command = ["claude"]
+submit_verify = true
+reads_agents_md = "pointer"
+queues_midturn = true
+
+[codex]
+command = ["codex", "--dangerously-bypass-approvals-and-sandbox"]
+submit_verify = true
+reads_agents_md = "native"
+queues_midturn = false

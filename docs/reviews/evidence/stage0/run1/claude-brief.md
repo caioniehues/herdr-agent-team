@@ -1,0 +1,2 @@
+# Stage 0 Claude live worker
+Follow the generated worker protocol exactly. First send the god an attention message saying "run1 claude started" using the protocol's msg verb. Stay working for at least 25 seconds so the god can submit a live mid-turn instruction. Then write the required durable report containing the exact tokens "run1 claude report" and "immediate message observed" plus any received instruction, send the god "run1 claude report finalized", and emit the required completion sentinel. Do not use git.

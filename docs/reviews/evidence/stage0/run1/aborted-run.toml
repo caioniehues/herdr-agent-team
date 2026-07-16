@@ -1,0 +1,74 @@
+god_pane_id = "w1A:pK"
+lifecycle = "active"
+
+[spec]
+name = "stage0-run1-1784132105"
+topology = "star"
+cwd = "/home/caio/Projects/herdr-agent-team"
+setup = ["test -f Cargo.toml"]
+
+[spec.god]
+target = "self"
+
+[[spec.workers]]
+name = "claude-worker"
+agent = "claude"
+role = "live e2e worker"
+task = "prove immediate pane submission and report push"
+worktree = true
+branch = "stage0/stage0-run1-1784132105-claude"
+brief = "/home/caio/Projects/herdr-agent-team/docs/reviews/evidence/stage0/run1/claude-brief.md"
+
+[[spec.workers]]
+name = "codex-worker"
+agent = "codex"
+role = "live e2e worker"
+task = "prove queued outbox drain and report push"
+worktree = true
+branch = "stage0/stage0-run1-1784132105-codex"
+brief = "/home/caio/Projects/herdr-agent-team/docs/reviews/evidence/stage0/run1/codex-brief.md"
+
+[herdr_session]
+socket_path = "/home/caio/.config/herdr/herdr.sock"
+
+[workers.claude-worker]
+task = "prove immediate pane submission and report push"
+workspace_id = "w1C"
+pane_id = "w1C:p1"
+worktree_path = "/home/caio/.herdr/worktrees/herdr-agent-team/stage0-stage0-run1-1784132105-claude"
+adopted = false
+launch_checkpoint = "resources_ready"
+lifecycle = "failed"
+
+[workers.codex-worker]
+task = "prove queued outbox drain and report push"
+workspace_id = "w1E"
+pane_id = "w1E:p1"
+worktree_path = "/home/caio/.herdr/worktrees/herdr-agent-team/stage0-stage0-run1-1784132105-codex"
+adopted = false
+launch_checkpoint = "brief_submitted"
+lifecycle = "running"
+
+[hook.worker_status]
+claude-worker = "idle"
+codex-worker = "working"
+
+[hook.worker_agent_identity]
+claude-worker = "claude"
+codex-worker = "codex"
+
+[hook.metadata_capabilities]
+report_metadata = true
+title = true
+display_agent = true
+custom_status = true
+state_labels = true
+seq = true
+ttl_ms = true
+
+[hook.metadata_sequence]
+claude-worker = 2
+codex-worker = 4
+
+[hook.aggregate_notifications]
+team-complete = true

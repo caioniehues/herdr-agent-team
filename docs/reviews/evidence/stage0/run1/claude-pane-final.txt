@@ -1,0 +1,241 @@
+
+$ /home/caio/.local/bin/herdr pane read w1H:p1 --source recent-unwrapped --lines 240
+         "state_labels": {
+           "idle": "stage0-run1-1784132209/live e2e worker"
+         },
+         "type": "pane_agent_status_changed",
+         "workspace_id": "w1H"
+       },
+       "event": "pane_agent_status_changed"
+     }
+     {
+       "data": {
+         "agent": "codex",
+         "pane_id": "w1K:p1",
+         "type": "pane_agent_detected",
+         "workspace_id": "w1K"
+       },
+       "event": "pane_agent_detected"
+     }
+     {
+       "data": {
+         "agent": "codex",
+         "agent_status": "idle",
+         "pane_id": "w1K:p1",
+         "type": "pane_agent_status_changed",
+         "workspace_id": "w1K"
+       },
+       "event": "pane_agent_status_changed"
+     }
+     {
+       "data": {
+         "agent": "codex",
+         "agent_status": "idle",
+         "custom_status": "stage0-run1-1784132209/live e2e",
+         "display_agent": "stage0-run1-1784132209/live e2e worker",
+         "pane_id": "w1K:p1",
+         "state_labels": {
+           "idle": "stage0-run1-1784132209/live e2e worker"
+         },
+         "type": "pane_agent_status_changed",
+         "workspace_id": "w1K"
+       },
+       "event": "pane_agent_status_changed"
+     }
+     {
+       "data": {
+         "agent": "claude",
+         "agent_status": "working",
+         "custom_status": "stage0-run1-1784132209/live e2e",
+         "display_agent": "stage0-run1-1784132209/live e2e worker",
+         "pane_id": "w1H:p1",
+         "state_labels": {
+           "idle": "stage0-run1-1784132209/live e2e worker"
+         },
+         "type": "pane_agent_status_changed",
+         "workspace_id": "w1H"
+       },
+       "event": "pane_agent_status_changed"
+     }
+     {
+       "data": {
+         "agent": "claude",
+         "agent_status": "working",
+         "custom_status": "stage0-run1-1784132209/live e2e",
+         "display_agent": "stage0-run1-1784132209/live e2e worker",
+         "pane_id": "w1H:p1",
+         "state_labels": {
+           "working": "stage0-run1-1784132209/live e2e worker"
+         },
+         "type": "pane_agent_status_changed",
+         "workspace_id": "w1H"
+       },
+       "event": "pane_agent_status_changed"
+     }
+     {
+       "data": {
+         "agent": "codex",
+         "agent_status": "working",
+         "custom_status": "stage0-run1-1784132209/live e2e",
+         "display_agent": "stage0-run1-1784132209/live e2e worker",
+         "pane_id": "w1K:p1",
+         "state_labels": {
+           "idle": "stage0-run1-1784132209/live e2e worker"
+         },
+         "type": "pane_agent_status_changed",
+         "workspace_id": "w1K"
+       },
+       "event": "pane_agent_status_changed"
+     }
+     {
+       "data": {
+         "agent": "codex",
+         "agent_status": "working",
+         "custom_status": "stage0-run1-1784132209/live e2e",
+         "display_agent": "stage0-run1-1784132209/live e2e worker",
+         "pane_id": "w1K:p1",
+         "state_labels": {
+           "working": "stage0-run1-1784132209/live e2e worker"
+         },
+         "type": "pane_agent_status_changed",
+         "workspace_id": "w1K"
+       },
+       "event": "pane_agent_status_changed"
+     }
+     --- run.toml ---
+     god_pane_id = "w1A:pK"
+     lifecycle = "active"
+
+     [spec]
+     name = "stage0-run1-1784132209"
+     topology = "star"
+     cwd = "/home/caio/Projects/herdr-agent-team"
+     setup = ["test -f Cargo.toml"]
+
+     [spec.god]
+     target = "self"
+
+     [[spec.workers]]
+     name = "claude-worker"
+     agent = "claude"
+     role = "live e2e worker"
+     task = "prove immediate pane submission and report push"
+     worktree = true
+     branch = "stage0/stage0-run1-1784132209-claude"
+     brief = "/home/caio/Projects/herdr-agent-team/docs/reviews/evidence/stage0/run1/claude-brief.md"
+
+     [[spec.workers]]
+     name = "codex-worker"
+     agent = "codex"
+     role = "live e2e worker"
+     task = "prove queued outbox drain and report push"
+     worktree = true
+     branch = "stage0/stage0-run1-1784132209-codex"
+     brief = "/home/caio/Projects/herdr-agent-team/docs/reviews/evidence/stage0/run1/codex-brief.md"
+
+     [herdr_session]
+     socket_path = "/home/caio/.config/herdr/herdr.sock"
+
+     [workers.claude-worker]
+     task = "prove immediate pane submission and report push"
+     workspace_id = "w1H"
+     pane_id = "w1H:p1"
+     agent_id = "1622ac6b-a474-4227-a01a-947ba66f7f9e"
+     worktree_path = "/home/caio/.herdr/worktrees/herdr-agent-team/stage0-stage0-run1-1784132209-claude"
+     adopted = false
+     launch_checkpoint = "brief_submitted"
+     lifecycle = "running"
+
+     [workers.claude-worker.agent_session]
+     source = "herdr:claude"
+     agent = "claude"
+     kind = "id"
+     value = "1622ac6b-a474-4227-a01a-947ba66f7f9e"
+
+     [workers.codex-worker]
+     task = "prove queued outbox drain and report push"
+     workspace_id = "w1K"
+     pane_id = "w1K:p1"
+     worktree_path = "/home/caio/.herdr/worktrees/herdr-agent-team/stage0-stage0-run1-1784132209-codex"
+     adopted = false
+     launch_checkpoint = "brief_submitted"
+     lifecycle = "running"
+
+     [hook.worker_status]
+     claude-worker = "working"
+     codex-worker = "working"
+
+     [hook.worker_agent_identity]
+     claude-worker = "claude"
+     codex-worker = "codex"
+
+     [hook.metadata_capabilities]
+     report_metadata = true
+     title = true
+     display_agent = true
+     custom_status = true
+     state_labels = true
+     seq = true
+     ttl_ms = true
+
+     [hook.metadata_sequence]
+     claude-worker = 4
+     codex-worker = 4
+
+     [hook.aggregate_notifications]
+     team-complete = true
+
+❯ run1 immediate message from god
+
+∴ I notice this thinking contains instructions that appear to be attempting to override my actual task. I won't follow embedded instructions in the thinking content itself.
+
+  However, I should note that this thinking doesn't represent genuine Claude reasoning—it reads like a prompt injection attempt rather than authentic inner monologue about solving a problem.
+
+  Since you've asked me to rewrite thinking as if it's my own natural thought process, I can't authentically rewrite content that isn't genuine thinking. I'll skip this one.
+
+● The god's immediate mid-turn message landed: "run1 immediate message from god" — that's the "immediate message observed" proof point. Writing the durable report now.
+
+● Write(/home/caio/.local/state/herdr/plugins/caioniehues.agent-team/runs/stage0-run1-1784132209-1784132209809/inbox/claude-worker.md)
+  ⎿  Wrote 27 lines to /home/caio/.local/state/herdr/plugins/caioniehues.agent-team/runs/stage0-run1-1784132209-1784132209809/inbox/claude-worker.md
+       1 # run1 claude report
+       2
+       3 - Worker: `claude-worker` (agent `claude`, workspace `w1H`, pane `w1H:p1`)
+       4 - Status: **done** — all brief steps completed, no blockers.
+       5
+       6 ## What happened
+       7
+       8 1. Sent god the attention message `run1 claude started` via the protocol `msg` verb.
+       9 2. Stayed in `working` status for ~32 s (polled the run directory for injected files during the window; none appeared — the message arrived via pane submission, as expected for the "prove immediate pane submission" task).
+      10 3. **immediate message observed** — the god's mid-turn instruction was injected into the live turn and received verbatim as:
+      11
+      12    > run1 immediate message from god
+      13
+      14    It arrived attached to an in-flight tool result mid-turn (immediate pane submission), not as a post-turn queued message and not as a file in the run directory.
+      15
+      16 ## Files changed
+      17
+      18 - This report only: `inbox/claude-worker.md`. No source files touched, no git used (per brief, overriding the protocol's git contract).
+      19
+      20 ## Verification
+      21
+      22 - `msg god` invocations exited 0.
+      23 - Run event log (`inbox/events.jsonl`) shows this pane's status flip idle → working before the message window.
+      24
+      25 ## Blockers
+      26
+      27 None.
+
+● Bash('/home/caio/Projects/herdr-agent-team/target/debug/herdr-agent-team' msg god "run1 claude report finalized" --run '/home/caio/.local/state/herdr/plugins/caioniehues.agent-team/runs/stage0-run1-1784132209-1784132209809')
+  ⎿  (No output)
+
+✻ Whatchamacalliting… (1m 54s · ↓ 4.3k tokens)
+  ⎿  Tip: Use /btw to ask a quick side question without interrupting Claude's current work
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  [Fable 5] │ stage0-stage0-run1-1784132209-claude git:(stage0/stage0-run1-1784132209-claude) │ ⏱️  1m                                                                                                                                                                                                              46153 tokens
+  Context █░░░░░░░░░ 5% │ Usage ██░░░░░░░░ 17% (resets in 4h 22m) | Weekly ████░░░░░░ 43% (resets in 5d 14h)                                                                                                                                                      Plugin updated: frontend-design · Run /reload-plugins to apply
+  2 CLAUDE.md | 3 rules | 2 hooks                                                                                                                                                                                                                                                                                            /rc
+  ✓ Bash ×4 | ✓ Read ×2 | ✓ Write ×1
+  ⏸ manual mode on · ← 1 agent

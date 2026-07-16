@@ -1,0 +1,2 @@
+# Stage 0 Codex live worker
+Follow the generated worker protocol exactly. First send the god an attention message saying "run2 codex started" using the protocol's msg verb. Stay working for at least 35 seconds so the god can create an outbox entry while you are working. Then write the required durable report containing the exact tokens "run2 codex report" and "queued message observed" plus any received instruction, send the god "run2 codex report finalized", and emit the required completion sentinel. Do not use git.
