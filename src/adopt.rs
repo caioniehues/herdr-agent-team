@@ -757,6 +757,7 @@ mod tests {
         *fake.pane.borrow_mut() = Some(PaneInfo {
             pane_id: "pane-adopted".to_owned(),
             workspace_id: "workspace-borrowed".to_owned(),
+            tab_id: None,
             agent: agent.map(str::to_owned),
             agent_id: Some("session-adopted".to_owned()),
             agent_session: Some(crate::herdr::AgentSession {

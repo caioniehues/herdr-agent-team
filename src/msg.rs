@@ -694,6 +694,7 @@ mod tests {
         *fake.pane.borrow_mut() = Some(PaneInfo {
             pane_id: "worker-pane".to_owned(),
             workspace_id: "workspace".to_owned(),
+            tab_id: None,
             agent: Some(agent.to_owned()),
             agent_id: Some("session".to_owned()),
             agent_session: None,

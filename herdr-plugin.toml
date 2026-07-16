@@ -38,6 +38,12 @@ title = "Open team report"
 contexts = ["pane"]
 command = ["target/release/herdmates", "open-report"]
 
+[[actions]]
+id = "jump"
+title = "Jump to next attention item"
+contexts = ["workspace"]
+command = ["target/release/herdmates", "jump"]
+
 [[panes]]
 id = "board"
 title = "Agent Team control deck"

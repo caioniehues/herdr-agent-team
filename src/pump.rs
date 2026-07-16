@@ -32,7 +32,7 @@ pub fn pump_board_command(_args: &[String]) -> Result<(), PumpError> {
     Ok(())
 }
 
-fn default_teams_root() -> Result<PathBuf, PumpError> {
+pub(crate) fn default_teams_root() -> Result<PathBuf, PumpError> {
     if let Some(root) = std::env::var_os("HERDMATES_TEAMS_ROOT") {
         return Ok(PathBuf::from(root));
     }
@@ -156,7 +156,7 @@ pub fn discover_team_dirs(teams_root: &Path) -> Vec<PathBuf> {
     dirs
 }
 
-fn read_inboxes(inboxes_dir: &Path) -> BTreeMap<String, Vec<InboxMessage>> {
+pub(crate) fn read_inboxes(inboxes_dir: &Path) -> BTreeMap<String, Vec<InboxMessage>> {
     let Ok(entries) = std::fs::read_dir(inboxes_dir) else {
         return BTreeMap::new();
     };
