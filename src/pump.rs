@@ -16,6 +16,7 @@ use crate::teamfiles::{self, InboxMessage, TeamConfig};
 use crate::tokens;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -32,9 +33,73 @@ pub fn pump_board_command(_args: &[String]) -> Result<(), PumpError> {
 }
 
 fn default_teams_root() -> Result<PathBuf, PumpError> {
+    if let Some(root) = std::env::var_os("HERDMATES_TEAMS_ROOT") {
+        return Ok(PathBuf::from(root));
+    }
     std::env::var_os("HOME")
         .map(|home| PathBuf::from(home).join(".claude/teams"))
         .ok_or(PumpError::UnresolvedTeamsRoot)
+}
+
+/// Debounce window between board-pump passes triggered by manifest events
+/// (issue #84 step 6): status-changed/pane events can fire in quick
+/// succession, and each pass walks the whole `~/.claude/teams` tree.
+const PUMP_DEBOUNCE_MS: u64 = 2_000;
+
+const DEBOUNCE_MARKER_FILE: &str = "pump-board-last-run";
+
+/// Entry point wired into the existing manifest event handlers
+/// (`on-agent-status`, called for `pane.agent_status_changed`,
+/// `pane.moved`, and every other listed event — ADR-0012 step 6).
+/// Debounced via a marker file under `state_dir`; never errors — any
+/// failure (env, I/O, herdr) degrades to a skipped pass, same policy as
+/// [`pump_once`].
+pub fn maybe_pump<H: HerdrApi>(state_dir: &Path, herdr: &H) {
+    let Ok(teams_root) = default_teams_root() else {
+        return;
+    };
+    maybe_pump_at(state_dir, &teams_root, herdr, now_ms(), PUMP_DEBOUNCE_MS);
+}
+
+/// Testable core of [`maybe_pump`]. Returns whether a pass actually ran,
+/// so tests can assert the debounce boundary precisely.
+pub(crate) fn maybe_pump_at<H: HerdrApi>(
+    state_dir: &Path,
+    teams_root: &Path,
+    herdr: &H,
+    now_ms: u64,
+    debounce_ms: u64,
+) -> bool {
+    let marker = state_dir.join(DEBOUNCE_MARKER_FILE);
+    if let Some(last_ms) = read_marker(&marker) {
+        if now_ms.saturating_sub(last_ms) < debounce_ms {
+            return false;
+        }
+    }
+    pump_once(teams_root, herdr);
+    write_marker(&marker, now_ms);
+    true
+}
+
+fn read_marker(path: &Path) -> Option<u64> {
+    std::fs::read_to_string(path).ok()?.trim().parse().ok()
+}
+
+fn write_marker(path: &Path, now_ms: u64) {
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    // Best-effort: a lost race between concurrent hook invocations just
+    // means one extra pump pass, never a stuck or duplicated publish
+    // (pump_once's report-metadata calls are idempotent overwrites).
+    let _ = std::fs::write(path, now_ms.to_string());
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64)
+        .unwrap_or(0)
 }
 
 /// One pump pass: discover every team under `teams_root`, resolve each
@@ -357,6 +422,99 @@ mod tests {
                 .map(|t| t.name.as_str())
                 .collect::<Vec<_>>(),
             ["task", "status", "model"]
+        );
+    }
+
+    // ── maybe_pump_at (debounce) ────────────────────────────────────────────
+
+    #[test]
+    fn first_call_with_no_marker_runs_and_writes_marker() {
+        let state_dir = TempDir::new();
+        let teams_dir = TempDir::new();
+        let fake = FakeHerdr::default();
+
+        let ran = maybe_pump_at(state_dir.path(), teams_dir.path(), &fake, 1_000, 2_000);
+
+        assert!(ran, "no prior marker means the pass must run");
+        assert_eq!(
+            read_marker(&state_dir.path().join(DEBOUNCE_MARKER_FILE)),
+            Some(1_000)
+        );
+    }
+
+    #[test]
+    fn call_inside_debounce_window_is_skipped_and_marker_unchanged() {
+        let state_dir = TempDir::new();
+        let teams_dir = TempDir::new();
+        let fake = FakeHerdr::default();
+        assert!(maybe_pump_at(
+            state_dir.path(),
+            teams_dir.path(),
+            &fake,
+            1_000,
+            2_000
+        ));
+
+        let ran_again = maybe_pump_at(state_dir.path(), teams_dir.path(), &fake, 2_500, 2_000);
+
+        assert!(
+            !ran_again,
+            "1500ms after the first pass is inside a 2000ms debounce window"
+        );
+        assert_eq!(
+            read_marker(&state_dir.path().join(DEBOUNCE_MARKER_FILE)),
+            Some(1_000),
+            "marker must not move on a skipped pass"
+        );
+    }
+
+    #[test]
+    fn call_after_debounce_window_elapses_runs_again() {
+        let state_dir = TempDir::new();
+        let teams_dir = TempDir::new();
+        let fake = FakeHerdr::default();
+        assert!(maybe_pump_at(
+            state_dir.path(),
+            teams_dir.path(),
+            &fake,
+            1_000,
+            2_000
+        ));
+
+        let ran_again = maybe_pump_at(state_dir.path(), teams_dir.path(), &fake, 3_100, 2_000);
+
+        assert!(
+            ran_again,
+            "2100ms after the first pass is outside a 2000ms debounce window"
+        );
+        assert_eq!(
+            read_marker(&state_dir.path().join(DEBOUNCE_MARKER_FILE)),
+            Some(3_100)
+        );
+    }
+
+    #[test]
+    fn debounced_pass_makes_no_herdr_calls_at_all() {
+        let state_dir = TempDir::new();
+        let teams_dir = TempDir::new();
+        write_team(teams_dir.path(), "session-a", "session-a-id", "");
+        let fake = FakeHerdr::default();
+        *fake.agents.borrow_mut() = vec![agent_with_session("w1:p1", "session-a-id")];
+        assert!(maybe_pump_at(
+            state_dir.path(),
+            teams_dir.path(),
+            &fake,
+            1_000,
+            2_000
+        ));
+        let calls_after_first_pass = fake.calls().len();
+
+        maybe_pump_at(state_dir.path(), teams_dir.path(), &fake, 1_500, 2_000);
+
+        assert_eq!(
+            fake.calls().len(),
+            calls_after_first_pass,
+            "a debounced call must not touch herdr at all"
         );
     }
 }

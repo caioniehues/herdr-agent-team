@@ -54,7 +54,14 @@ pub fn hook_command() -> Result<(), HookError> {
     let state_dir = std::env::var("HERDR_PLUGIN_STATE_DIR")
         .map(PathBuf::from)
         .map_err(|_| HookError::MissingEnvironment("HERDR_PLUGIN_STATE_DIR"))?;
-    on_agent_status(&event_json, &state_dir, &HerdrClient::from_env())
+    let herdr = HerdrClient::from_env();
+    let result = on_agent_status(&event_json, &state_dir, &herdr);
+    // D1 agent board (ADR-0012 step 6): every manifest event listed for
+    // `on-agent-status` also drives the board pump, debounced. Runs
+    // regardless of the legacy result above — an unrelated, independent
+    // data source (`~/.claude/teams`), and must never itself error the hook.
+    crate::pump::maybe_pump(&state_dir, &herdr);
+    result
 }
 
 pub fn on_agent_status<H: HerdrApi>(
