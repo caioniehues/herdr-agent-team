@@ -6,7 +6,8 @@
 use crate::board::{BoardCollector, BoardError, BoardSnapshot};
 use crate::god_cli::{GodCliError, GodCollector, GodSnapshot};
 use crate::herdr::{
-    AgentInfo, HerdrApi, HerdrError, PaneInfo, WaitOutcome, WorkspaceRef, WorktreeRef,
+    AgentInfo, HerdrApi, HerdrError, PaneInfo, PaneLayoutSnapshot, WaitOutcome, WorkspaceRef,
+    WorktreeRef,
 };
 use crate::metadata::MetadataUpdate;
 use crate::socket::{
@@ -320,6 +321,9 @@ impl<C: HerdrApi> HerdrApi for SocketClient<C> {
     }
     fn pane_list(&self, w: Option<&str>) -> Result<Vec<PaneInfo>, HerdrError> {
         self.fallback().pane_list(w)
+    }
+    fn pane_layout(&self, p: &str) -> Result<PaneLayoutSnapshot, HerdrError> {
+        self.fallback().pane_layout(p)
     }
     fn api_schema(&self) -> Result<String, HerdrError> {
         self.fallback().api_schema()

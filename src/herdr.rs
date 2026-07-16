@@ -155,6 +155,34 @@ pub enum WaitOutcome {
     TimedOut,
 }
 
+/// A pane's on-screen rectangle, as reported by `herdr pane layout`
+/// (`docs/herdr-api-schema.snapshot.json`'s `PaneLayoutRect`) — the only
+/// herdr surface with geometry; `PaneInfo` itself carries none.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct PaneLayoutRect {
+    pub x: u16,
+    pub y: u16,
+    pub width: u16,
+    pub height: u16,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct PaneLayoutPane {
+    pub pane_id: String,
+    pub focused: bool,
+    pub rect: PaneLayoutRect,
+}
+
+/// `herdr pane layout --pane <id>`'s response: the queried pane's whole tab,
+/// as a flat pane list plus the tab's overall `area` rect — geometry for the
+/// tmux `pane_width/height/left/top` and `window_width/height` format fields
+/// (issue #85 commit 8, cmux correction b).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct PaneLayoutSnapshot {
+    pub area: PaneLayoutRect,
+    pub panes: Vec<PaneLayoutPane>,
+}
+
 /// Operations used by the plugin's command and hook seams.
 ///
 /// This is deliberately the single abstraction over Herdr so command paths can
@@ -223,6 +251,12 @@ pub trait HerdrApi {
         Err(unsupported_api())
     }
     fn pane_list(&self, _workspace_id: Option<&str>) -> Result<Vec<PaneInfo>, HerdrError> {
+        Err(unsupported_api())
+    }
+    /// `display-message -p #{pane_width,pane_height,pane_left,pane_top,
+    /// window_width,window_height}` (issue #85 commit 8): the target pane's
+    /// tab layout, geometry's only herdr source.
+    fn pane_layout(&self, _pane_id: &str) -> Result<PaneLayoutSnapshot, HerdrError> {
         Err(unsupported_api())
     }
     fn api_schema(&self) -> Result<String, HerdrError> {
@@ -434,6 +468,15 @@ impl HerdrClient {
         parse_pane_list(&stdout).map_err(|message| self.invalid_response(&args, message))
     }
 
+    pub fn pane_layout(&self, pane_id: &str) -> Result<PaneLayoutSnapshot, HerdrError> {
+        let args = args(["pane", "layout"])
+            .with("--pane")
+            .with(pane_id)
+            .finish();
+        let stdout = self.invoke(&args)?;
+        parse_pane_layout(&stdout).map_err(|message| self.invalid_response(&args, message))
+    }
+
     pub fn api_schema(&self) -> Result<String, HerdrError> {
         self.invoke(&args(["api", "schema", "--json"]).finish())
     }
@@ -581,6 +624,9 @@ impl HerdrApi for HerdrClient {
     fn pane_list(&self, workspace_id: Option<&str>) -> Result<Vec<PaneInfo>, HerdrError> {
         Self::pane_list(self, workspace_id)
     }
+    fn pane_layout(&self, pane_id: &str) -> Result<PaneLayoutSnapshot, HerdrError> {
+        Self::pane_layout(self, pane_id)
+    }
     fn api_schema(&self) -> Result<String, HerdrError> {
         Self::api_schema(self)
     }
@@ -660,6 +706,7 @@ pub(crate) mod test_support {
         PaneSplitPane(String, String),
         PaneClose(String),
         PaneResize(String, String, Option<String>),
+        PaneLayout(String),
     }
 
     #[derive(Default)]
@@ -688,6 +735,8 @@ pub(crate) mod test_support {
         pub fail_split: SyncCell<bool>,
         pub fail_close: SyncCell<bool>,
         pub fail_resize: SyncCell<bool>,
+        pub layout_result: SyncRefCell<Option<PaneLayoutSnapshot>>,
+        pub fail_layout: SyncCell<bool>,
         pub agents: SyncRefCell<Vec<AgentInfo>>,
         pub waits: SyncRefCell<VecDeque<WaitOutcome>>,
     }
@@ -952,6 +1001,38 @@ pub(crate) mod test_support {
                 return Err(Self::command_error());
             }
             Ok(())
+        }
+        fn pane_layout(&self, pane_id: &str) -> Result<PaneLayoutSnapshot, HerdrError> {
+            self.calls
+                .borrow_mut()
+                .push(format!("pane_layout:{pane_id}"));
+            self.typed_calls
+                .borrow_mut()
+                .push(FakeCall::PaneLayout(pane_id.to_owned()));
+            if self.fail_layout.get() {
+                return Err(Self::command_error());
+            }
+            match self.layout_result.borrow().clone() {
+                Some(layout) => Ok(layout),
+                None => Ok(PaneLayoutSnapshot {
+                    area: PaneLayoutRect {
+                        x: 0,
+                        y: 0,
+                        width: 80,
+                        height: 24,
+                    },
+                    panes: vec![PaneLayoutPane {
+                        pane_id: pane_id.to_owned(),
+                        focused: true,
+                        rect: PaneLayoutRect {
+                            x: 0,
+                            y: 0,
+                            width: 80,
+                            height: 24,
+                        },
+                    }],
+                }),
+            }
         }
         fn api_schema(&self) -> Result<String, HerdrError> {
             self.calls.borrow_mut().push("api_schema".to_owned());
@@ -1224,6 +1305,19 @@ fn parse_agent_wait(stdout: &str, pane_id: &str, status: &str) -> Result<(), Str
             Ok(())
         }
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct PaneLayoutResult {
+    #[serde(rename = "type")]
+    kind: String,
+    layout: PaneLayoutSnapshot,
+}
+
+fn parse_pane_layout(stdout: &str) -> Result<PaneLayoutSnapshot, String> {
+    let result: PaneLayoutResult = parse_response(stdout)?;
+    expect_kind(&result.kind, "pane_layout")?;
+    Ok(result.layout)
 }
 
 fn parse_pane_list(stdout: &str) -> Result<Vec<PaneInfo>, String> {

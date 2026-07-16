@@ -56,6 +56,22 @@
 //! deferred to `run()`) is safe under parallel `cargo test`, unlike
 //! `TEAMMUX_STATE_PATH`'s commit-4 race: no test ever sets or unsets this
 //! var, so every thread's read is stable.
+//!
+//! Commit 8 geometry fix (post-review, REVIEW-85.md finding 1): the six
+//! tmux geometry format-string fields parsed since commit 2
+//! (`pane_width/height/left/top`, `window_width/height`) had no dispatch
+//! handler and fell to the generic placeholder — a real coverage gap
+//! against cmux's `tmuxEnrichContextWithGeometry`. `herdr pane layout
+//! --pane <id>` (live-verified: `docs/herdr-api-schema.snapshot.json` has
+//! no width/height/x/y on `PaneInfo` itself; geometry only exists on
+//! `PaneLayoutRect`, reached via `pane layout`/`pane edges`) is the only
+//! herdr surface with geometry, so both pane- and window-scoped fields
+//! resolve through it: `pane_geometry` reads the queried pane's own `rect`
+//! out of its layout snapshot's `panes` list; `window_geometry` has no
+//! herdr "tab layout" command to call directly, so it finds any pane
+//! registered under the target tab (via `pane_list`, the same technique
+//! `list_pane_ids` already uses) and reads that pane's layout snapshot's
+//! `area` instead — one pane's snapshot already describes its whole tab.
 
 use crate::herdr::HerdrApi;
 use crate::idmap::IdMap;
@@ -94,6 +110,18 @@ pub fn dispatch<H: HerdrApi>(
             target: Some(pane),
             field: DisplayField::WindowId,
         } => display_window_id(herdr, idmap, &pane),
+        Verb::DisplayMessage {
+            target: Some(pane),
+            field:
+                field @ (DisplayField::PaneWidth
+                | DisplayField::PaneHeight
+                | DisplayField::PaneLeft
+                | DisplayField::PaneTop),
+        } => pane_geometry(herdr, idmap, &pane, field),
+        Verb::DisplayMessage {
+            target: Some(window),
+            field: field @ (DisplayField::WindowWidth | DisplayField::WindowHeight),
+        } => window_geometry(herdr, idmap, &window, field),
         Verb::ListPaneIds { window } => list_pane_ids(herdr, idmap, &window),
         Verb::SplitWindow {
             target,
@@ -355,6 +383,102 @@ fn display_window_id<H: HerdrApi>(herdr: &H, idmap: &IdMap, pane: &TmuxId) -> Di
     }
 }
 
+/// `display-message -t %N -p #{pane_width,pane_height,pane_left,pane_top}`:
+/// read the pane's own rect out of its `herdr pane layout` snapshot.
+fn pane_geometry<H: HerdrApi>(
+    herdr: &H,
+    idmap: &IdMap,
+    pane: &TmuxId,
+    field: DisplayField,
+) -> DispatchOutcome {
+    let herdr_pane_id = match idmap.lookup(pane.as_str()) {
+        Some(id) => id.to_owned(),
+        None => return unknown_tmux_id("display-message", pane.as_str()),
+    };
+    let layout = match herdr.pane_layout(&herdr_pane_id) {
+        Ok(layout) => layout,
+        Err(error) => {
+            return DispatchOutcome::Error {
+                message: format!("teammux: display-message: herdr pane layout failed: {error}"),
+            }
+        }
+    };
+    let Some(rect) = layout
+        .panes
+        .iter()
+        .find(|pane| pane.pane_id == herdr_pane_id)
+        .map(|pane| &pane.rect)
+    else {
+        return DispatchOutcome::Error {
+            message: format!(
+                "teammux: display-message: herdr pane `{herdr_pane_id}` missing from its own layout snapshot"
+            ),
+        };
+    };
+    let value = match field {
+        DisplayField::PaneWidth => rect.width,
+        DisplayField::PaneHeight => rect.height,
+        DisplayField::PaneLeft => rect.x,
+        DisplayField::PaneTop => rect.y,
+        other => unreachable!("pane_geometry only dispatched for pane rect fields, got {other:?}"),
+    };
+    DispatchOutcome::Ok {
+        stdout: format!("{value}\n"),
+    }
+}
+
+/// `display-message -t @N -p #{window_width,window_height}`: herdr has no
+/// "tab layout" command, so resolve any pane registered under the target
+/// tab (same technique as `list_pane_ids`) and read its layout snapshot's
+/// whole-tab `area` — one pane's snapshot already describes its tab.
+fn window_geometry<H: HerdrApi>(
+    herdr: &H,
+    idmap: &IdMap,
+    window: &TmuxId,
+    field: DisplayField,
+) -> DispatchOutcome {
+    let herdr_tab_id = match idmap.lookup(window.as_str()) {
+        Some(id) => id.to_owned(),
+        None => return unknown_tmux_id("display-message", window.as_str()),
+    };
+    let panes = match herdr.pane_list(None) {
+        Ok(panes) => panes,
+        Err(error) => {
+            return DispatchOutcome::Error {
+                message: format!("teammux: display-message: herdr pane list failed: {error}"),
+            }
+        }
+    };
+    let Some(representative) = panes
+        .iter()
+        .find(|pane| pane.tab_id.as_deref() == Some(herdr_tab_id.as_str()))
+    else {
+        return DispatchOutcome::Error {
+            message: format!(
+                "teammux: display-message: herdr tab `{herdr_tab_id}` has no panes to read geometry from"
+            ),
+        };
+    };
+    let layout = match herdr.pane_layout(&representative.pane_id) {
+        Ok(layout) => layout,
+        Err(error) => {
+            return DispatchOutcome::Error {
+                message: format!("teammux: display-message: herdr pane layout failed: {error}"),
+            }
+        }
+    };
+    let value = match field {
+        DisplayField::WindowWidth => layout.area.width,
+        DisplayField::WindowHeight => layout.area.height,
+        other => {
+            unreachable!("window_geometry only dispatched for window area fields, got {other:?}")
+        }
+    };
+    DispatchOutcome::Ok {
+        stdout: format!("{value}\n"),
+    }
+}
+
 /// `list-panes -t @N -F #{pane_id}`: enumerate the panes herdr reports for
 /// the tab `window` maps to, translating each back to its tmux `%N` id.
 fn list_pane_ids<H: HerdrApi>(herdr: &H, idmap: &IdMap, window: &TmuxId) -> DispatchOutcome {
@@ -456,7 +580,7 @@ pub fn run(argv: &[String]) -> ExitCode {
 mod tests {
     use super::*;
     use crate::herdr::test_support::FakeHerdr;
-    use crate::herdr::PaneInfo;
+    use crate::herdr::{PaneInfo, PaneLayoutPane, PaneLayoutRect, PaneLayoutSnapshot};
     use crate::tmuxargs::GlobalFlags;
     use std::env;
     use std::fs;
@@ -545,28 +669,6 @@ mod tests {
     }
 
     #[test]
-    fn recognized_but_unhandled_verbs_are_a_labeled_placeholder_not_a_silent_success() {
-        // The tmux geometry format-string queries are parsed (cmux
-        // correction b, commit 2) but have no handler yet — every other
-        // Verb shape is now dispatched as of commit 7.
-        let idmap = temp_idmap(&[]);
-        let outcome = dispatch(
-            &FakeHerdr::default(),
-            &idmap,
-            call(Verb::DisplayMessage {
-                target: Some(TmuxId::parse("%1").unwrap()),
-                field: DisplayField::PaneWidth,
-            }),
-        );
-        match outcome {
-            DispatchOutcome::Error { message } => {
-                assert!(message.contains("not yet implemented"));
-            }
-            other => panic!("expected a placeholder Error outcome, got {other:?}"),
-        }
-    }
-
-    #[test]
     fn execute_surfaces_unrecognized_verbs_as_a_loud_error_not_silent_success() {
         let idmap = temp_idmap(&[]);
         let outcome = execute(
@@ -638,6 +740,198 @@ mod tests {
         match outcome {
             DispatchOutcome::Error { message } => {
                 assert!(message.contains("no tmux window id registered"));
+            }
+            other => panic!("expected an Error outcome, got {other:?}"),
+        }
+    }
+
+    type Rect = (u16, u16, u16, u16);
+
+    fn layout(area: Rect, panes: &[(&str, Rect)]) -> PaneLayoutSnapshot {
+        let rect = |(x, y, width, height): Rect| PaneLayoutRect {
+            x,
+            y,
+            width,
+            height,
+        };
+        PaneLayoutSnapshot {
+            area: rect(area),
+            panes: panes
+                .iter()
+                .map(|(pane_id, r)| PaneLayoutPane {
+                    pane_id: (*pane_id).to_owned(),
+                    focused: false,
+                    rect: rect(*r),
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn pane_geometry_reads_the_queried_panes_own_rect() {
+        let idmap = temp_idmap(&[("%1", "w1A:p6")]);
+        let fake = FakeHerdr::default();
+        *fake.layout_result.borrow_mut() = Some(layout(
+            (4, 1, 207, 63),
+            &[("w1A:pX", (4, 1, 72, 63)), ("w1A:p6", (76, 1, 72, 63))],
+        ));
+
+        let cases = [
+            (DisplayField::PaneWidth, "72\n"),
+            (DisplayField::PaneHeight, "63\n"),
+            (DisplayField::PaneLeft, "76\n"),
+            (DisplayField::PaneTop, "1\n"),
+        ];
+        for (field, expected) in cases {
+            let outcome = dispatch(
+                &fake,
+                &idmap,
+                call(Verb::DisplayMessage {
+                    target: Some(TmuxId::parse("%1").unwrap()),
+                    field,
+                }),
+            );
+            assert_eq!(
+                outcome,
+                DispatchOutcome::Ok {
+                    stdout: expected.to_owned()
+                },
+                "{field:?}"
+            );
+        }
+        assert!(fake.calls().iter().any(|call| call == "pane_layout:w1A:p6"));
+    }
+
+    #[test]
+    fn pane_geometry_fails_loudly_for_an_unregistered_pane() {
+        let idmap = temp_idmap(&[]);
+        let outcome = dispatch(
+            &FakeHerdr::default(),
+            &idmap,
+            call(Verb::DisplayMessage {
+                target: Some(TmuxId::parse("%9").unwrap()),
+                field: DisplayField::PaneWidth,
+            }),
+        );
+        match outcome {
+            DispatchOutcome::Error { message } => assert!(message.contains("unknown tmux id")),
+            other => panic!("expected an Error outcome, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pane_geometry_fails_loudly_when_the_pane_is_missing_from_its_own_layout_snapshot() {
+        let idmap = temp_idmap(&[("%1", "w1A:p6")]);
+        let fake = FakeHerdr::default();
+        *fake.layout_result.borrow_mut() =
+            Some(layout((0, 0, 80, 24), &[("w1A:pOther", (0, 0, 80, 24))]));
+
+        let outcome = dispatch(
+            &fake,
+            &idmap,
+            call(Verb::DisplayMessage {
+                target: Some(TmuxId::parse("%1").unwrap()),
+                field: DisplayField::PaneWidth,
+            }),
+        );
+        match outcome {
+            DispatchOutcome::Error { message } => {
+                assert!(message.contains("missing from its own layout snapshot"))
+            }
+            other => panic!("expected an Error outcome, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pane_geometry_surfaces_a_herdr_layout_failure_loudly() {
+        let idmap = temp_idmap(&[("%1", "w1A:p6")]);
+        let fake = FakeHerdr::default();
+        fake.fail_layout.set(true);
+
+        let outcome = dispatch(
+            &fake,
+            &idmap,
+            call(Verb::DisplayMessage {
+                target: Some(TmuxId::parse("%1").unwrap()),
+                field: DisplayField::PaneHeight,
+            }),
+        );
+        match outcome {
+            DispatchOutcome::Error { message } => {
+                assert!(message.contains("herdr pane layout failed"))
+            }
+            other => panic!("expected an Error outcome, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn window_geometry_reads_the_tabs_area_via_any_registered_pane() {
+        let idmap = temp_idmap(&[("@0", "w1A:t1")]);
+        let fake = FakeHerdr::default();
+        *fake.panes.borrow_mut() = vec![
+            pane("w1A:pOther", Some("w1A:t2")),
+            pane("w1A:p6", Some("w1A:t1")),
+        ];
+        *fake.layout_result.borrow_mut() = Some(layout((4, 1, 207, 63), &[]));
+
+        let cases = [
+            (DisplayField::WindowWidth, "207\n"),
+            (DisplayField::WindowHeight, "63\n"),
+        ];
+        for (field, expected) in cases {
+            let outcome = dispatch(
+                &fake,
+                &idmap,
+                call(Verb::DisplayMessage {
+                    target: Some(TmuxId::parse("@0").unwrap()),
+                    field,
+                }),
+            );
+            assert_eq!(
+                outcome,
+                DispatchOutcome::Ok {
+                    stdout: expected.to_owned()
+                },
+                "{field:?}"
+            );
+        }
+        assert!(fake.calls().iter().any(|call| call == "pane_layout:w1A:p6"));
+    }
+
+    #[test]
+    fn window_geometry_fails_loudly_for_an_unregistered_window() {
+        let idmap = temp_idmap(&[]);
+        let outcome = dispatch(
+            &FakeHerdr::default(),
+            &idmap,
+            call(Verb::DisplayMessage {
+                target: Some(TmuxId::parse("@9").unwrap()),
+                field: DisplayField::WindowWidth,
+            }),
+        );
+        match outcome {
+            DispatchOutcome::Error { message } => assert!(message.contains("unknown tmux id")),
+            other => panic!("expected an Error outcome, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn window_geometry_fails_loudly_when_the_tab_has_no_registered_panes() {
+        let idmap = temp_idmap(&[("@0", "w1A:t1")]);
+        let fake = FakeHerdr::default();
+        *fake.panes.borrow_mut() = vec![pane("w1A:pOther", Some("w1A:t2"))];
+
+        let outcome = dispatch(
+            &fake,
+            &idmap,
+            call(Verb::DisplayMessage {
+                target: Some(TmuxId::parse("@0").unwrap()),
+                field: DisplayField::WindowWidth,
+            }),
+        );
+        match outcome {
+            DispatchOutcome::Error { message } => {
+                assert!(message.contains("no panes to read geometry from"))
             }
             other => panic!("expected an Error outcome, got {other:?}"),
         }
