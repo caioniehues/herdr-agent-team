@@ -10,6 +10,7 @@ use std::process::ExitCode;
 pub mod adopt;
 pub mod agents_md;
 pub mod board;
+pub mod focusfile;
 pub mod god_cli;
 pub mod herdr;
 pub mod hook;
