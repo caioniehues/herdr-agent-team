@@ -1,0 +1,13 @@
+[
+  {
+    "from": "beta",
+    "text": "PING-B",
+    "summary": "Replying to lead's ping test",
+    "timestamp": "2026-07-17T13:44:51.274Z",
+    "color": "green",
+    "msgV": 1,
+    "msg_id": "7711896d-c8ff-4272-a795-a022510c02c7",
+    "type": "message",
+    "read": false
+  }
+]

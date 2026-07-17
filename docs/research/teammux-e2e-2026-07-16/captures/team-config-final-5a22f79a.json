@@ -1,0 +1,18 @@
+{
+  "name": "session-5a22f79a",
+  "createdAt": 1784295848178,
+  "leadAgentId": "team-lead@session-5a22f79a",
+  "leadSessionId": "5a22f79a-0f84-4c2e-83f7-d93771874e76",
+  "members": [
+    {
+      "agentId": "team-lead@session-5a22f79a",
+      "name": "team-lead",
+      "agentType": "team-lead",
+      "joinedAt": 1784295848178,
+      "tmuxPaneId": "leader",
+      "cwd": "/home/caio/Projects/herdr-agent-team",
+      "subscriptions": [],
+      "backendType": "in-process"
+    }
+  ]
+}

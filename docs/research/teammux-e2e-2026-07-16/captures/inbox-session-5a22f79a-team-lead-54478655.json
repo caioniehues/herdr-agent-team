@@ -1,0 +1,12 @@
+[
+  {
+    "from": "alpha",
+    "text": "{\"type\":\"idle_notification\",\"from\":\"alpha\",\"timestamp\":\"2026-07-17T13:44:52.931Z\",\"idleReason\":\"available\",\"summary\":\"[to lead] Replying PING-A per task #1\"}",
+    "timestamp": "2026-07-17T13:44:52.931Z",
+    "color": "blue",
+    "msgV": 1,
+    "msg_id": "a46d0c25-089d-4cfa-ab90-c6a393524a18",
+    "type": "message",
+    "read": false
+  }
+]

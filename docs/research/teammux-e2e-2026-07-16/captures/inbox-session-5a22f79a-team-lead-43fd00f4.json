@@ -1,0 +1,13 @@
+[
+  {
+    "from": "alpha",
+    "text": "PING-A",
+    "summary": "Replying PING-A per task #1",
+    "timestamp": "2026-07-17T13:44:47.159Z",
+    "color": "blue",
+    "msgV": 1,
+    "msg_id": "5361a1a3-c58e-434a-9797-f4011c1749c1",
+    "type": "message",
+    "read": false
+  }
+]

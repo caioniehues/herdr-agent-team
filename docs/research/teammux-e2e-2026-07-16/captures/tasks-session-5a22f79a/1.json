@@ -1,0 +1,11 @@
+{
+  "id": "1",
+  "subject": "Task A: reply PING-A",
+  "description": "Send the lead a message containing exactly \"PING-A\" via SendMessage, then mark this task completed. Do nothing else — no file edits, no git, no other work.",
+  "owner": "alpha",
+  "status": "completed",
+  "blocks": [
+    "3"
+  ],
+  "blockedBy": []
+}

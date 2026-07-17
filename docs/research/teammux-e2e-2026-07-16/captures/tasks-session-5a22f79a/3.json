@@ -1,0 +1,12 @@
+{
+  "id": "3",
+  "subject": "Task C: confirm A and B done",
+  "description": "Confirm task A and task B are both completed. Owned and completed by the lead only.",
+  "owner": "lead",
+  "status": "completed",
+  "blocks": [],
+  "blockedBy": [
+    "1",
+    "2"
+  ]
+}

@@ -1,0 +1,11 @@
+[
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"task_assignment\",\"taskId\":\"2\",\"subject\":\"Task B: reply PING-B\",\"description\":\"Send the lead a message containing exactly \\\"PING-B\\\" via SendMessage, then mark this task completed. Do nothing else — no file edits, no git, no other work.\",\"assignedBy\":\"team-lead\",\"timestamp\":\"2026-07-17T13:44:32.337Z\"}",
+    "timestamp": "2026-07-17T13:44:32.337Z",
+    "msgV": 1,
+    "msg_id": "24040a8e-5dcc-4050-bc2d-6e15cdd10726",
+    "type": "message",
+    "read": false
+  }
+]

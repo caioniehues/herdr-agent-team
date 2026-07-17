@@ -1,0 +1,11 @@
+[
+  {
+    "from": "team-lead",
+    "text": "You are teammate \"beta\" in a live end-to-end test of native Claude Code agent teams. You have been assigned Task #2 (\"reply PING-B\") via the task system.\n\nDo EXACTLY this and nothing else:\n1. Call SendMessage with `to: \"lead\"` and message content exactly \"PING-B\".\n2. Call TaskUpdate to mark Task #2 status as \"completed\".\n\nDo NOT read, write, or edit any files. Do NOT run git commands. Do NOT do any other work, exploration, or investigation. This is a pure protocol test — your only job is the ping and the task completion above.",
+    "timestamp": "2026-07-17T13:44:39.233Z",
+    "msgV": 1,
+    "msg_id": "80d73e6c-a801-4fa6-8bad-3a9a7ee7d821",
+    "type": "message",
+    "read": false
+  }
+]

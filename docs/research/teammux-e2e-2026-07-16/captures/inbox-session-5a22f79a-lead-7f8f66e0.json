@@ -1,0 +1,11 @@
+[
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"task_assignment\",\"taskId\":\"3\",\"subject\":\"Task C: confirm A and B done\",\"description\":\"Confirm task A and task B are both completed. Owned and completed by the lead only.\",\"assignedBy\":\"team-lead\",\"timestamp\":\"2026-07-17T13:44:32.730Z\"}",
+    "timestamp": "2026-07-17T13:44:32.730Z",
+    "msgV": 1,
+    "msg_id": "f7383194-59b8-4840-a129-bb13f93bd382",
+    "type": "message",
+    "read": false
+  }
+]
