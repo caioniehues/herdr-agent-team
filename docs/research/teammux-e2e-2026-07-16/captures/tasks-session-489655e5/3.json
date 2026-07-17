@@ -1,0 +1,11 @@
+{
+  "id": "3",
+  "subject": "Lead writes a one-line summary",
+  "description": "Lead (not a teammate) writes a one-line summary of the E2E test once both PING tasks are complete.",
+  "status": "pending",
+  "blocks": [],
+  "blockedBy": [
+    "1",
+    "2"
+  ]
+}

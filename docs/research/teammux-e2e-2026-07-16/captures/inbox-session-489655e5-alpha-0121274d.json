@@ -1,0 +1,11 @@
+[
+  {
+    "from": "team-lead",
+    "text": "{\"type\":\"task_assignment\",\"taskId\":\"1\",\"subject\":\"Send lead PING-ALPHA\",\"description\":\"Send a SendMessage to the lead (to: \\\"main\\\") whose text contains the word PING-ALPHA. Pure messaging only — do not write files, run git, or edit anything.\",\"assignedBy\":\"team-lead\",\"timestamp\":\"2026-07-16T15:58:29.811Z\"}",
+    "timestamp": "2026-07-16T15:58:29.811Z",
+    "msgV": 1,
+    "msg_id": "36c73567-a65a-4770-a4e2-da4d1a027c13",
+    "type": "message",
+    "read": false
+  }
+]

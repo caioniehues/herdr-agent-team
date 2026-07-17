@@ -1,0 +1,11 @@
+{
+  "id": "1",
+  "subject": "Send lead PING-ALPHA",
+  "description": "Send a SendMessage to the lead (to: \"main\") whose text contains the word PING-ALPHA. Pure messaging only — do not write files, run git, or edit anything.",
+  "owner": "",
+  "status": "pending",
+  "blocks": [
+    "3"
+  ],
+  "blockedBy": []
+}
