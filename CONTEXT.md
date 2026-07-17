@@ -54,6 +54,51 @@ legacy orchestration terms (still accurate for the v1.x surface) below.
   as `$name` in `[ui.sidebar.agents] rows`) attached to a pane via
   `pane report-metadata`. Display-only; never semantic state.
 
+## Mission control (north-star vocabulary, ADR-0013)
+
+- **Mission control** — the monitor/steer/gate stack over a native
+  team: signal engine + board + focus pane + inbox-write steering +
+  recorder + hook companion.
+- **Signal engine** — the shared library module that classifies each
+  teammate into one waiting-reason class from team files, herdr CLI,
+  and transcript mtime. Single source of blocked/stalled facts; board
+  and focus pane both consume it, neither re-derives.
+- **Waiting-reason** — the one badge a teammate carries: four classes,
+  precedence top-down — permission-prompt (pane-backed only, native
+  herdr Blocked) > blocked-on-dependency (idle + owned task with
+  incomplete `blockedBy`) > stalled > turn-complete (unbadged).
+  Never display a wrong reason; degrade to reason-less "waiting".
+- **Quiet / stalled** — the two stalled tiers: quiet (soft, 5 min,
+  tolerates false positives) and stalled (hard, 10 min, all signals
+  must hold). Liveness ground truth = session-transcript mtime;
+  unread-inbox entry older than ~2 min accelerates quiet→stalled.
+- **Status-lag deadlock** — the failure mode the stalled class exists
+  to surface: a team quietly wedged (mailbox not draining, task never
+  progressing) while every teammate looks idle.
+- **Inbox-write steering** — nudging a teammate by writing to its
+  mailbox under `.lock` + read-filter-atomic-rename discipline. V1 is
+  human-confirmed only (suggested nudge); auto-nudge is post-v1.
+- **Suggested nudge** — a pre-composed inbox message the TUI pane
+  offers for a stuck teammate; the human reviews and confirms before
+  any write.
+- **Recorder** — minimal append-only log of the signal engine's
+  classified observations (state transitions, reason changes,
+  task-file deltas). Log schema = engine output schema. Replay UI is
+  post-v1.
+- **Hook companion** — the plugin-shipped hooks on the three team
+  events (`TeammateIdle`/`TaskCreated`/`TaskCompleted`): a push
+  source into engine + recorder; exit-2 gating capability exists but
+  ships default-off.
+- **Honest proxy** — the only progress rendering allowed: done/total
+  counts and per-task elapsed. ETA time prediction is banned.
+- **JSONL tier** — the deferred post-v1 surfaces requiring session-
+  JSONL parsing: context bar, cost footer, per-agent activity tail.
+  V1 uses transcript mtime as a stat only.
+- **Attention queue** — focus-pane term (per #90 disposition): the
+  ordered human-needing items (decisions, blocked workers) the focus
+  pane renders below the single next action; sourced from the focus
+  file, lead inbox, and the signal engine's human-needing subset.
+
 ## Legacy orchestration vocabulary (v1.x surface, frozen at v1.1.0)
 
 - **Team** — a named set of workers participating in one run, initially
