@@ -28,7 +28,7 @@ if [ -f "$FOCUS_FILE" ]; then
         BEGIN { section = "" }
         /^##[[:space:]]*[Dd][Ee][Cc][Ii][Ss][Ii][Oo][Nn][Ss][[:space:]]*$/ { section = "decisions"; next }
         /^##/ { section = ""; next }
-        section == "decisions" && /^-[[:space:]]*\[[ xX]\]/ { print }
+        section == "decisions" && /^- \[[ xX]\]/ { print }
     ' "$FOCUS_FILE")
 fi
 

@@ -69,6 +69,12 @@ struct AppState {
     focus: FocusFile,
     queue: Vec<AttentionItem>,
     selection: usize,
+    /// One-line status message (issue #86 review finding 3): a failed jump
+    /// used to be silently swallowed (`let _ = jump::jump_to_pane(...)`),
+    /// leaving the human staring at an apparently-unresponsive UI. Set on
+    /// jump failure, cleared on jump success; carried across reloads so it
+    /// doesn't vanish the instant the 1s debounce tick fires.
+    status: Option<String>,
 }
 
 pub fn focus_pane_command(_args: &[String]) -> Result<(), FocusPaneError> {
@@ -95,15 +101,17 @@ fn load_state(runtime: &Runtime) -> Result<AppState, FocusPaneError> {
     let focus = focusfile::read_focus_file(&jump::default_focus_file_path())?;
     let agents = runtime.herdr.agent_list()?;
     let team_leads = jump::discover_team_leads(&runtime.teams_root, &agents);
-    let consumed = audit::read_consumed_ids(&runtime.audit_path)?;
+    let consumed = audit::read_consumed(&runtime.audit_path)?;
     let queue = audit::filter_unconsumed(
         jump::merge_team_queues(&agents, &focus, &team_leads),
         &consumed,
+        jump::now_ms(),
     );
     Ok(AppState {
         focus,
         queue,
         selection: 0,
+        status: None,
     })
 }
 
@@ -113,6 +121,7 @@ fn try_reload_state(runtime: &Runtime, previous: AppState) -> AppState {
     match load_state(runtime) {
         Ok(mut fresh) => {
             fresh.selection = previous.selection.min(fresh.queue.len().saturating_sub(1));
+            fresh.status = previous.status;
             fresh
         }
         Err(_) => previous,
@@ -139,12 +148,21 @@ fn run_until_quit(
                             clamp_selection(state.selection, state.queue.len(), delta);
                     }
                     QueueAction::Jump => {
-                        if let Some(pane_id) = state
+                        match state
                             .queue
                             .get(state.selection)
                             .and_then(|item| item.pane_id.as_deref())
                         {
-                            let _ = jump::jump_to_pane(&runtime.herdr, pane_id);
+                            Some(pane_id) => {
+                                state.status = match jump::jump_to_pane(&runtime.herdr, pane_id) {
+                                    Ok(()) => None,
+                                    Err(error) => Some(format!("jump failed: {error}")),
+                                };
+                            }
+                            None => {
+                                state.status =
+                                    Some("selected item has no pane to jump to".to_owned());
+                            }
                         }
                     }
                     QueueAction::MarkDone => {
@@ -198,16 +216,18 @@ fn clamp_selection(selection: usize, len: usize, delta: isize) -> usize {
     (selection as isize + delta).clamp(0, len as isize - 1) as usize
 }
 
-/// Pure render: attention queue on top, then task / next-action / decisions.
-/// No I/O.
+/// Pure render: attention queue on top, then task / next-action /
+/// decisions, then a one-line status area. No I/O.
 fn draw(frame: &mut Frame, state: &AppState) {
-    let [queue_area, task_area, next_action_area, decisions_area] = Layout::vertical([
-        Constraint::Min(5),
-        Constraint::Length(3),
-        Constraint::Length(3),
-        Constraint::Min(3),
-    ])
-    .areas(frame.area());
+    let [queue_area, task_area, next_action_area, decisions_area, status_area] =
+        Layout::vertical([
+            Constraint::Min(5),
+            Constraint::Length(3),
+            Constraint::Length(3),
+            Constraint::Min(3),
+            Constraint::Length(1),
+        ])
+        .areas(frame.area());
 
     let mut list_state = ListState::default();
     if !state.queue.is_empty() {
@@ -221,6 +241,11 @@ fn draw(frame: &mut Frame, state: &AppState) {
         next_action_area,
     );
     frame.render_widget(decisions_section(&state.focus), decisions_area);
+    frame.render_widget(status_line(state.status.as_deref()), status_area);
+}
+
+fn status_line(status: Option<&str>) -> Paragraph<'static> {
+    Paragraph::new(status.unwrap_or("").to_owned())
 }
 
 fn kind_label(kind: AttentionKind) -> &'static str {
@@ -323,6 +348,7 @@ mod tests {
             focus: FocusFile::default(),
             queue: vec![],
             selection: 0,
+            status: None,
         };
         let text = buffer_text(&render_to_buffer(&state, 60, 16));
         assert!(text.contains("nothing needs attention"));
@@ -350,6 +376,7 @@ mod tests {
                 ),
             ],
             selection: 0,
+            status: None,
         };
         let text = buffer_text(&render_to_buffer(&state, 70, 20));
         assert!(text.contains("[BLOCKED] w1A:p1"));
@@ -357,6 +384,18 @@ mod tests {
         assert!(text.contains("Ship #86"));
         assert!(text.contains("Wire the queue region"));
         assert!(text.contains("[ ] Pending call"));
+    }
+
+    #[test]
+    fn status_message_renders_on_its_own_line() {
+        let state = AppState {
+            focus: FocusFile::default(),
+            queue: vec![],
+            selection: 0,
+            status: Some("jump failed: pane not found".to_owned()),
+        };
+        let text = buffer_text(&render_to_buffer(&state, 60, 16));
+        assert!(text.contains("jump failed: pane not found"));
     }
 
     #[test]

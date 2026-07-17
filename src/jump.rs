@@ -56,9 +56,12 @@ pub fn jump_command(_args: &[String]) -> Result<(), JumpError> {
     let team_leads = discover_team_leads(&teams_root, &agents);
 
     let audit_path = default_audit_log_path()?;
-    let consumed = audit::read_consumed_ids(&audit_path)?;
-    let queue =
-        audit::filter_unconsumed(merge_team_queues(&agents, &focus, &team_leads), &consumed);
+    let consumed = audit::read_consumed(&audit_path)?;
+    let queue = audit::filter_unconsumed(
+        merge_team_queues(&agents, &focus, &team_leads),
+        &consumed,
+        now_ms(),
+    );
 
     let target = queue
         .into_iter()
