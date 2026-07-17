@@ -64,6 +64,22 @@ title = "Open focus pane"
 contexts = ["workspace"]
 command = ["sh", "-c", "\"$HERDR_BIN_PATH\" plugin pane open --plugin caioniehues.herdmates --entrypoint focus --placement split"]
 
+# Issue #98 stage 3 (ADR-0013 §93 stage 3, docs/spec.md §4): read-only
+# full-screen board, split placement per Caio decision — distinct from the
+# legacy `board` entrypoint above (frozen v1.1.0, different data model).
+[[panes]]
+id = "pane-board"
+title = "Mission control board"
+description = "Read-only team overview: agent status/reason badges, task list, mailbox tail. All reads, no writes."
+placement = "split"
+command = ["target/release/herdmates", "pane-board"]
+
+[[actions]]
+id = "open-pane-board"
+title = "Open mission control board"
+contexts = ["workspace"]
+command = ["sh", "-c", "\"$HERDR_BIN_PATH\" plugin pane open --plugin caioniehues.herdmates --entrypoint pane-board --placement split"]
+
 [[link_handlers]]
 id = "report"
 title = "Open team report"

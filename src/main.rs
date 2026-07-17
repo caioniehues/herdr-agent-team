@@ -41,9 +41,14 @@ fn main() -> ExitCode {
         // recorder — polls the gather + signal-engine pipeline and appends
         // classified-observation deltas to an append-only JSONL log.
         "record" => exit(recorder::record_command(&args)),
+        // Issue #98 stage 3 (ADR-0013 §93 stage 3, docs/spec.md §4):
+        // read-only full-screen TUI plugin pane over the gather +
+        // signal-engine pipeline. Distinct from the legacy `board`
+        // subcommand (frozen v1.1.0, different data model).
+        "pane-board" => exit(pane_board::pane_board_command(&args)),
         "" | "help" | "--help" | "-h" => {
             eprintln!(
-                "herdmates <adopt|board|spawn|status|kill|inbox|report|wait|msg|open-report|on-agent-status|pump-board|teammux-launch|jump|focus|record>"
+                "herdmates <adopt|board|spawn|status|kill|inbox|report|wait|msg|open-report|on-agent-status|pump-board|teammux-launch|jump|focus|record|pane-board>"
             );
             ExitCode::SUCCESS
         }

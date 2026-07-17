@@ -22,6 +22,7 @@ pub mod jump;
 pub mod launcher;
 pub mod metadata;
 pub mod msg;
+pub mod pane_board;
 pub mod paths;
 pub mod pump;
 pub mod reconcile;
