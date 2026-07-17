@@ -344,8 +344,6 @@ pub struct TaskDisplay {
     pub id: String,
     pub subject: Option<String>,
     pub status: String,
-    pub blocked_by: Vec<String>,
-    pub owner: Option<String>,
     pub seconds_since_modified: Option<u64>,
 }
 
@@ -362,8 +360,6 @@ pub fn team_task_displays(paths: &GatherPaths, team: &str, now: SystemTime) -> V
                 id: task.id,
                 subject: task.subject,
                 status: task.status.as_str().to_owned(),
-                blocked_by: task.blocked_by,
-                owner: task.owner,
                 seconds_since_modified,
             }
         })

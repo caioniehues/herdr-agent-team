@@ -29,12 +29,11 @@ use crate::herdr::{HerdrApi, HerdrClient, HerdrError};
 use crate::signal_engine::{self, AgentActivity, StalledThresholds};
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::event::{self, Event, KeyCode};
+use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
-use ratatui::crossterm::{execute, ExecutableCommand};
 use ratatui::layout::{Constraint, Layout};
-use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
 use ratatui::{Frame, Terminal};
 use std::io;
@@ -79,42 +78,21 @@ pub struct AgentRow {
     pub badge: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TaskRow {
-    pub id: String,
-    pub subject: Option<String>,
-    pub status: String,
-    /// Time since the task *file* last changed on disk (mtime-derived,
-    /// ADR-0013 ETA ban). Any status flip or edit resets this — it is
-    /// NOT "how long this task has existed" or "time since it started"
-    /// (Caio correction, #98 milestone review: the native task schema has
-    /// no creation timestamp at all, so this can only ever mean "last
-    /// write", never task age). Rendered as "updated Xs/Xm ago", never as
-    /// a bare duration, to keep that distinction visible in the UI.
-    pub seconds_since_modified: Option<u64>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MailboxLine {
-    pub agent: String,
-    pub from: Option<String>,
-    pub text: Option<String>,
-    pub age_secs: Option<u64>,
-}
-
-/// Full board render model. `metadata_placeholder` is always this fixed
-/// string in v1 — the row exists so the layout doesn't reshuffle when the
-/// post-v1 JSONL tier (context bar, cost footer, activity tail) graduates
-/// (ADR-0013 cut line).
+/// Full board render model. Task and mailbox rows reuse the gather-layer
+/// types directly — they are already pure data (no I/O handles, no ratatui
+/// types), so a render-side copy would be duplication, not a seam.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoardModel {
     pub header: BoardHeader,
     pub agents: Vec<AgentRow>,
-    pub tasks: Vec<TaskRow>,
-    pub mailbox: Vec<MailboxLine>,
-    pub metadata_placeholder: &'static str,
+    pub tasks: Vec<TaskDisplay>,
+    pub mailbox: Vec<MailboxEntry>,
 }
 
+/// Fixed metadata row — exists so the layout doesn't reshuffle when the
+/// post-v1 JSONL tier (context bar, cost footer, activity tail) graduates
+/// (ADR-0013 cut line). Never varies in v1, so it lives in `draw`, not
+/// the model.
 const METADATA_PLACEHOLDER: &str = "metadata: (post-v1 JSONL tier)";
 
 /// Coarse glyph for an agent's raw activity — distinct from the reason
@@ -160,26 +138,6 @@ pub fn build_model(
         .filter(|task| task.status == "completed")
         .count();
 
-    let task_rows = tasks
-        .iter()
-        .map(|task| TaskRow {
-            id: task.id.clone(),
-            subject: task.subject.clone(),
-            status: task.status.clone(),
-            seconds_since_modified: task.seconds_since_modified,
-        })
-        .collect();
-
-    let mailbox_lines = mailbox
-        .iter()
-        .map(|entry| MailboxLine {
-            agent: entry.agent.clone(),
-            from: entry.from.clone(),
-            text: entry.text.clone(),
-            age_secs: entry.seconds_ago,
-        })
-        .collect();
-
     BoardModel {
         header: BoardHeader {
             team: team.to_owned(),
@@ -188,18 +146,9 @@ pub fn build_model(
             tasks_total,
         },
         agents,
-        tasks: task_rows,
-        mailbox: mailbox_lines,
-        metadata_placeholder: METADATA_PLACEHOLDER,
+        tasks: tasks.to_vec(),
+        mailbox: mailbox.to_vec(),
     }
-}
-
-/// Anything unresolvable degrades to `WaitingReason::Waiting` upstream
-/// (never-wrong-reason doctrine) — this function is only for badge tests
-/// that need the reason directly, not exposed outside this module.
-#[cfg(test)]
-fn classify_for_test(facts: &signal_engine::ObservedFacts) -> signal_engine::WaitingReason {
-    signal_engine::classify(facts, &StalledThresholds::default())
 }
 
 // ─── Impure gather layer ────────────────────────────────────────────────────
@@ -282,7 +231,7 @@ pub fn pane_board_command(args: &[String]) -> Result<(), PaneBoardError> {
     let interval = Duration::from_secs(parsed.interval_secs.max(1));
 
     enable_raw_mode()?;
-    io::stdout().execute(EnterAlternateScreen)?;
+    execute!(io::stdout(), EnterAlternateScreen)?;
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
 
     let result = run_until_quit(&mut terminal, &paths, &team, &herdr, &thresholds, interval);
@@ -350,7 +299,7 @@ fn draw(frame: &mut Frame, model: &BoardModel) {
     frame.render_widget(agents_list(&model.agents), agents_area);
     frame.render_widget(tasks_list(&model.tasks), tasks_area);
     frame.render_widget(mailbox_list(&model.mailbox), mailbox_area);
-    frame.render_widget(Paragraph::new(model.metadata_placeholder), metadata_area);
+    frame.render_widget(Paragraph::new(METADATA_PLACEHOLDER), metadata_area);
 }
 
 fn header_paragraph(header: &BoardHeader) -> Paragraph<'static> {
@@ -377,7 +326,7 @@ fn agents_list(agents: &[AgentRow]) -> List<'static> {
     List::new(rows).block(Block::default().borders(Borders::ALL).title("Agents"))
 }
 
-fn tasks_list(tasks: &[TaskRow]) -> List<'static> {
+fn tasks_list(tasks: &[TaskDisplay]) -> List<'static> {
     let rows: Vec<ListItem> = if tasks.is_empty() {
         vec![ListItem::new("(no tasks)")]
     } else {
@@ -398,7 +347,7 @@ fn tasks_list(tasks: &[TaskRow]) -> List<'static> {
     List::new(rows).block(Block::default().borders(Borders::ALL).title("Tasks"))
 }
 
-fn mailbox_list(mailbox: &[MailboxLine]) -> List<'static> {
+fn mailbox_list(mailbox: &[MailboxEntry]) -> List<'static> {
     let rows: Vec<ListItem> = if mailbox.is_empty() {
         vec![ListItem::new("(no mailbox activity)")]
     } else {
@@ -407,13 +356,13 @@ fn mailbox_list(mailbox: &[MailboxLine]) -> List<'static> {
             .map(|line| {
                 let from = line.from.as_deref().unwrap_or("?");
                 let text = line.text.as_deref().unwrap_or("");
-                ListItem::new(Line::from(format!(
+                ListItem::new(format!(
                     "[{} <- {}] {} ({})",
                     line.agent,
                     from,
                     text,
-                    format_age(line.age_secs)
-                )))
+                    format_age(line.seconds_ago)
+                ))
             })
             .collect()
     };
@@ -437,7 +386,7 @@ fn render_to_buffer(model: &BoardModel, width: u16, height: u16) -> ratatui::buf
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::signal_engine::{ObservedFacts, WaitingReason};
+    use crate::signal_engine::ObservedFacts;
 
     fn teammate(name: &str, is_lead: bool, facts: ObservedFacts) -> TeammateFacts {
         TeammateFacts {
@@ -476,16 +425,12 @@ mod tests {
                 id: "1".to_owned(),
                 subject: Some("Ship it".to_owned()),
                 status: "completed".to_owned(),
-                blocked_by: vec![],
-                owner: None,
                 seconds_since_modified: Some(30),
             },
             TaskDisplay {
                 id: "2".to_owned(),
                 subject: None,
                 status: "pending".to_owned(),
-                blocked_by: vec![],
-                owner: None,
                 seconds_since_modified: None,
             },
         ];
@@ -508,10 +453,6 @@ mod tests {
 
         let model = build_model("team-x", &facts, &[], &[], &StalledThresholds::default());
         assert_eq!(model.agents[0].badge.as_deref(), Some("permission"));
-        assert_eq!(
-            classify_for_test(&blocked_facts),
-            WaitingReason::PermissionPrompt
-        );
     }
 
     #[test]
@@ -533,12 +474,6 @@ mod tests {
         assert_eq!(model.mailbox.len(), 1);
         assert_eq!(model.mailbox[0].agent, "alpha");
         assert_eq!(model.mailbox[0].text.as_deref(), Some("go"));
-    }
-
-    #[test]
-    fn build_model_metadata_placeholder_is_stable() {
-        let model = build_model("team-x", &[], &[], &[], &StalledThresholds::default());
-        assert_eq!(model.metadata_placeholder, METADATA_PLACEHOLDER);
     }
 
     // ── format_age ───────────────────────────────────────────────────────────
@@ -598,8 +533,6 @@ mod tests {
             id: "1".to_owned(),
             subject: Some("Ship the board".to_owned()),
             status: "in_progress".to_owned(),
-            blocked_by: vec![],
-            owner: None,
             seconds_since_modified: Some(45),
         }];
         let mailbox = vec![MailboxEntry {
