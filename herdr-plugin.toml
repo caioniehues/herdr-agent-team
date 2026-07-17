@@ -1,6 +1,6 @@
 id = "caioniehues.herdmates"
 name = "Herdmates"
-version = "2.0.0"
+version = "2.1.0"
 min_herdr_version = "0.7.4"
 description = "Claude Code teammates, native in herdr — teammux shim, agent board, focus pane (pivot in progress, ADR-0012; legacy team orchestration still included)"
 platforms = ["linux", "macos"]
