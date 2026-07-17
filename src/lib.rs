@@ -18,6 +18,7 @@ pub mod god_cli;
 pub mod herdr;
 pub mod hook;
 pub mod idmap;
+pub mod inbox_write;
 pub mod jump;
 pub mod launcher;
 pub mod metadata;

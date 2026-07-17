@@ -90,6 +90,12 @@ pub struct TeammateFacts {
     pub agent_id: String,
     pub is_lead: bool,
     pub facts: ObservedFacts,
+    /// Herdr pane id, when this teammate resolves to one (#99 jump-to-pane
+    /// affordance). `None` degrades the affordance to hidden, never a
+    /// guess. Lead-only by construction today (see module doc's
+    /// session-id-resolution gap) — non-lead members have no
+    /// herdr-resolvable session id in the live team-config schema.
+    pub pane_id: Option<String>,
 }
 
 /// Gather every member of `team`'s [`ObservedFacts`] from live sources.
@@ -108,10 +114,11 @@ pub fn gather_team<H: HerdrApi>(
         return Vec::new();
     };
     let agents = herdr.agent_list().unwrap_or_default();
-    let lead_status = pump::resolve_lead_pane(&config, &agents).and_then(|pane_id| {
+    let lead_pane_id = pump::resolve_lead_pane(&config, &agents);
+    let lead_status = lead_pane_id.as_ref().and_then(|pane_id| {
         agents
             .iter()
-            .find(|agent| agent.pane_id == pane_id)
+            .find(|agent| &agent.pane_id == pane_id)
             .and_then(|agent| agent.status.clone())
     });
 
@@ -161,6 +168,11 @@ pub fn gather_team<H: HerdrApi>(
                     owned_task_blocked_by_incomplete,
                     seconds_since_transcript_activity,
                     seconds_since_unread_inbox,
+                },
+                pane_id: if member.is_lead {
+                    lead_pane_id.clone()
+                } else {
+                    None
                 },
             }
         })
@@ -344,6 +356,10 @@ pub struct TaskDisplay {
     pub id: String,
     pub subject: Option<String>,
     pub status: String,
+    /// Normalized owner (`""`/`null` collapse to `None` at parse time,
+    /// same as `TaskFile::owner`) — used by #99's nudge composition to
+    /// find the selected agent's owned in-progress task.
+    pub owner: Option<String>,
     pub seconds_since_modified: Option<u64>,
 }
 
@@ -360,6 +376,7 @@ pub fn team_task_displays(paths: &GatherPaths, team: &str, now: SystemTime) -> V
                 id: task.id,
                 subject: task.subject,
                 status: task.status.as_str().to_owned(),
+                owner: task.owner,
                 seconds_since_modified,
             }
         })
@@ -516,7 +533,7 @@ fn resolve_transcript_mtime(projects_root: &Path, session_id: &str) -> Option<Sy
 // is implemented: `YYYY-MM-DDTHH:MM:SS[.fff]Z`. Anything else degrades to
 // `None` (never guessed).
 
-fn parse_iso8601_utc(s: &str) -> Option<u64> {
+pub(crate) fn parse_iso8601_utc(s: &str) -> Option<u64> {
     let s = s.strip_suffix('Z')?;
     let (date, time) = s.split_once('T')?;
 

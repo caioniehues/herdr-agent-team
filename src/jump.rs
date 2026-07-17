@@ -22,7 +22,7 @@
 use crate::attention::{self, AttentionItem, AttentionKind};
 use crate::audit;
 use crate::focusfile::{self, FocusFile, FocusFileError};
-use crate::herdr::{HerdrClient, HerdrError};
+use crate::herdr::{HerdrApi, HerdrClient, HerdrError};
 use crate::paths::{self, PathError};
 use crate::pump;
 use crate::teamfiles::{self, Teammate};
@@ -77,10 +77,13 @@ pub fn jump_command(_args: &[String]) -> Result<(), JumpError> {
 
 /// `pane get` (resolve `workspace_id`/`tab_id`) → `workspace focus` →
 /// `tab focus` — the 3-call sequence that stands in for the pane-focus-by-id
-/// verb herdr doesn't have (see module docs). `pub(crate)` so the focus-pane
-/// TUI's Enter-to-jump action (#86 commit 7) reuses this instead of
-/// duplicating the call sequence.
-pub(crate) fn jump_to_pane(herdr: &HerdrClient, pane_id: &str) -> Result<(), HerdrError> {
+/// verb herdr doesn't have (see module docs). `pub(crate)`, generic over
+/// [`HerdrApi`] so both the focus-pane TUI's Enter-to-jump action (#86
+/// commit 7) and the mission-control board's jump affordance (#99) reuse
+/// this instead of duplicating the call sequence — the board's terminal
+/// loop is generic over `HerdrApi` for `FakeHerdr` testability, `jump`'s
+/// own caller passes a concrete `HerdrClient`, both monomorphize fine.
+pub(crate) fn jump_to_pane<H: HerdrApi>(herdr: &H, pane_id: &str) -> Result<(), HerdrError> {
     let pane = herdr.pane_get(pane_id)?;
     herdr.workspace_focus(&pane.workspace_id)?;
     if let Some(tab_id) = &pane.tab_id {
